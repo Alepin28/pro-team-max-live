@@ -18,11 +18,11 @@
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
-  "devDependencies": {
-    "typescript": "7.0.2"
-  },
   "engines": {
     "node": "22.x"
   },
-  "packageManager": "pnpm@10.14.0"
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
 }
