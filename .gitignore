@@ -1,0 +1,52 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+.vercel/
+.vercel
+
+# Variables secretas / llaves
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Permitimos solo ejemplo sin llaves reales
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+
+# Backups y comprimidos
+BACKUP*/
+BACKUP-*/
+*.zip
+*.rar
+*.7z
+
+# Archivos temporales
+.tmp/
+temp/
+.cache/
+
+# Cloudflare local
+cloudflared.exe
+cloudflared
