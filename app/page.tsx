@@ -47,6 +47,12 @@ type RequestRow = {
   status: string | null;
 };
 
+type PlayerCategoryRow = {
+  id: string;
+  active: boolean | null;
+  validated_category: string | null;
+};
+
 type AlertRow = {
   id: string;
   icon: string;
@@ -126,8 +132,22 @@ function categoryLabel(
   return (
     labels[category ?? ""] ??
     category ??
-    ""
+    "Por categorizar"
   );
+}
+
+function isRealCategory(
+  value?: string | null
+) {
+  return [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "C7",
+  ].includes(value ?? "");
 }
 
 function dateOnly(value: string) {
@@ -423,6 +443,11 @@ export default function DashboardPage() {
     useState<RequestRow[]>([]);
 
   const [
+    pendingCategoryPlayers,
+    setPendingCategoryPlayers,
+  ] = useState(0);
+
+  const [
     canViewPayments,
     setCanViewPayments,
   ] = useState(false);
@@ -486,6 +511,7 @@ export default function DashboardPage() {
       const [
         eventsRes,
         requestsRes,
+        playersCategoryRes,
       ] = await Promise.all([
         secureSelectWithFallback({
           secureSource:
@@ -518,11 +544,39 @@ export default function DashboardPage() {
             "account_id",
             accountId
           ),
+
+        supabase
+          .from("players")
+          .select(
+            "id, active, validated_category"
+          )
+          .eq(
+            "account_id",
+            accountId
+          ),
       ]);
 
       if (requestsRes.error) {
         throw requestsRes.error;
       }
+
+      if (playersCategoryRes.error) {
+        throw playersCategoryRes.error;
+      }
+
+      const playerRows =
+        (playersCategoryRes.data ??
+          []) as PlayerCategoryRow[];
+
+      setPendingCategoryPlayers(
+        playerRows.filter(
+          (player) =>
+            player.active !== false &&
+            !isRealCategory(
+              player.validated_category
+            )
+        ).length
+      );
 
       const eventRows =
         (eventsRes.data ??
@@ -654,6 +708,7 @@ export default function DashboardPage() {
       setVenues([]);
       setCommunities([]);
       setRequests([]);
+      setPendingCategoryPlayers(0);
     } finally {
       setLoading(false);
     }
@@ -916,6 +971,8 @@ export default function DashboardPage() {
             request.status ===
             "pendiente"
         ).length,
+
+      pendingCategoryPlayers,
     };
   }, [
     events,
@@ -925,6 +982,7 @@ export default function DashboardPage() {
     participationsByEvent,
     requests,
     canViewPayments,
+    pendingCategoryPlayers,
   ]);
 
   const alerts =
@@ -1158,6 +1216,23 @@ export default function DashboardPage() {
         });
       }
 
+      if (
+        metrics.pendingCategoryPlayers > 0
+      ) {
+        rows.push({
+          id: "players-without-category",
+          icon: "🏷️",
+          title:
+            `${metrics.pendingCategoryPlayers} ` +
+            `jugador(es) por categorizar`,
+          detail:
+            "Personas ingresadas sin categoría. Hay que revisar antes de invitarlas.",
+          level: "warn",
+          href:
+            "/jugadores?categoria=por_categorizar",
+        });
+      }
+
       const order = {
         danger: 0,
         warn: 1,
@@ -1177,6 +1252,7 @@ export default function DashboardPage() {
       venueById,
       communityById,
       metrics.pendingRequests,
+      metrics.pendingCategoryPlayers,
       canViewPayments,
     ]);
 
@@ -1250,6 +1326,25 @@ export default function DashboardPage() {
 
             <small>
               Cupos por llenar
+            </small>
+          </div>
+        </Link>
+
+        <Link
+          className="dashboard-kpi"
+          href="/jugadores?categoria=por_categorizar"
+        >
+          <span>🏷️</span>
+
+          <div>
+            <strong>
+              {
+                metrics.pendingCategoryPlayers
+              }
+            </strong>
+
+            <small>
+              Por categorizar
             </small>
           </div>
         </Link>
@@ -1363,6 +1458,20 @@ export default function DashboardPage() {
 
         <Link
           className="btn secondary"
+          href="/jugadores"
+        >
+          👥 Jugadores
+        </Link>
+
+        <Link
+          className="btn secondary"
+          href="/jugadores?categoria=por_categorizar"
+        >
+          🏷️ Por categorizar
+        </Link>
+
+        <Link
+          className="btn secondary"
           href="/solicitudes"
         >
           📥 Solicitudes
@@ -1393,6 +1502,15 @@ export default function DashboardPage() {
           partido(s) pasado(s)
           todavía abierto(s)
         </span>
+
+        {metrics.pendingCategoryPlayers > 0 ? (
+          <span className="badge warn">
+            {
+              metrics.pendingCategoryPlayers
+            }{" "}
+            jugador(es) sin categoría
+          </span>
+        ) : null}
 
         <span className="help-text">
           Un partido desaparece de

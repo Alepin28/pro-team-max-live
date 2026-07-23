@@ -7,7 +7,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { DEMO_ACCOUNT_ID } from "@/lib/db";
 import { supabase } from "@/lib/supabaseClient";
 
-type Category = "C1" | "C2" | "C3" | "C4" | "C5" | "C6" | "C7";
+type RealCategory = "C1" | "C2" | "C3" | "C4" | "C5" | "C6" | "C7";
+type Category = "UNCATEGORIZED" | RealCategory;
 type Gender = "hombre" | "mujer";
 type Side = "drive" | "reves" | "cualquiera";
 type StatusFilter = "activos" | "inactivos" | "todos";
@@ -16,7 +17,8 @@ const FREE_ACTIVE_PLAYER_LIMIT = 50;
 
 const PLAYER_AVATARS = ["👨", "👩", "🎾", "⭐", "🔥", "💪", "🏆", "🙂"];
 
-const CATEGORIES: Array<{ value: Category; label: string }> = [
+const CATEGORY_OPTIONS: Array<{ value: Category; label: string }> = [
+  { value: "UNCATEGORIZED", label: "Por categorizar" },
   { value: "C1", label: "Primera" },
   { value: "C2", label: "Segunda" },
   { value: "C3", label: "Tercera" },
@@ -25,6 +27,12 @@ const CATEGORIES: Array<{ value: Category; label: string }> = [
   { value: "C6", label: "Sexta" },
   { value: "C7", label: "Novatos" },
 ];
+
+const REAL_CATEGORIES: Array<{ value: RealCategory; label: string }> =
+  CATEGORY_OPTIONS.filter(
+    (item): item is { value: RealCategory; label: string } =>
+      item.value !== "UNCATEGORIZED"
+  );
 
 const DAYS = [
   { value: 1, label: "Lunes" },
@@ -83,7 +91,7 @@ type PlayerForm = {
   whatsapp: string;
   gender: Gender;
   primaryCategory: Category;
-  secondaryCategory: "" | Category;
+  secondaryCategory: "" | RealCategory;
   preferredSide: Side;
   active: boolean;
   communityIds: string[];
@@ -94,9 +102,20 @@ type PlayerForm = {
   avatarEmoji: string;
 };
 
-function weeklyAvailabilityFromRows(
-  rows: AvailabilityRow[] = []
-): AvailabilityDraft[] {
+function defaultFullAvailability(): AvailabilityDraft[] {
+  return DAYS.map((day) => ({
+    dayOfWeek: day.value,
+    enabled: true,
+    startTime: "07:00",
+    endTime: "22:00",
+  }));
+}
+
+function weeklyAvailabilityFromRows(rows: AvailabilityRow[] = []): AvailabilityDraft[] {
+  if (!rows.length) {
+    return defaultFullAvailability();
+  }
+
   return DAYS.map((day) => {
     const savedRow = rows.find((row) => row.day_of_week === day.value);
 
@@ -115,21 +134,37 @@ function emptyForm(): PlayerForm {
     lastName: "",
     whatsapp: "+593",
     gender: "hombre",
-    primaryCategory: "C5",
+    primaryCategory: "UNCATEGORIZED",
     secondaryCategory: "",
     preferredSide: "cualquiera",
     active: true,
     communityIds: [],
-    availability: weeklyAvailabilityFromRows(),
+    availability: defaultFullAvailability(),
     notes: "",
     availabilityNotes: "",
     profileImageUrl: "",
-    avatarEmoji: "👨",
+    avatarEmoji: "🎾",
   };
 }
 
 function normalizeCategory(value?: string | null): Category {
-  return CATEGORIES.some((item) => item.value === value) ? (value as Category) : "C5";
+  if (!value) return "UNCATEGORIZED";
+
+  if (
+    value === "UNCATEGORIZED" ||
+    value === "por_categorizar" ||
+    value === "pendiente"
+  ) {
+    return "UNCATEGORIZED";
+  }
+
+  return REAL_CATEGORIES.some((item) => item.value === value)
+    ? (value as RealCategory)
+    : "UNCATEGORIZED";
+}
+
+function categoryToDb(value: Category): RealCategory | null {
+  return value === "UNCATEGORIZED" ? null : value;
 }
 
 function normalizeGender(value?: string | null): Gender {
@@ -137,12 +172,19 @@ function normalizeGender(value?: string | null): Gender {
 }
 
 function normalizeSide(value?: string | null): Side {
-  if (value === "drive" || value === "reves" || value === "cualquiera") return value;
+  if (value === "drive" || value === "reves" || value === "cualquiera") {
+    return value;
+  }
+
   return "cualquiera";
 }
 
 function categoryLabel(value?: string | null) {
-  return CATEGORIES.find((item) => item.value === value)?.label ?? "Sin categoría";
+  const normalized = normalizeCategory(value);
+  return (
+    CATEGORY_OPTIONS.find((item) => item.value === normalized)?.label ??
+    "Por categorizar"
+  );
 }
 
 function dayLabel(value: number) {
@@ -158,127 +200,88 @@ function fullName(player: PlayerRow) {
 }
 
 function adjacentCategories(primary: Category) {
-  const index = CATEGORIES.findIndex((item) => item.value === primary);
-  return CATEGORIES.filter((_, itemIndex) => Math.abs(itemIndex - index) === 1);
+  if (primary === "UNCATEGORIZED") return [];
+
+  const index = REAL_CATEGORIES.findIndex((item) => item.value === primary);
+
+  return REAL_CATEGORIES.filter(
+    (_, itemIndex) => Math.abs(itemIndex - index) === 1
+  );
 }
 
 function isSecondaryAllowed(primary: Category, secondary: string) {
-  return secondary === "" || adjacentCategories(primary).some((item) => item.value === secondary);
+  if (primary === "UNCATEGORIZED") return secondary === "";
+
+  return (
+    secondary === "" ||
+    adjacentCategories(primary).some((item) => item.value === secondary)
+  );
 }
 
 function availabilitySummary(rows: AvailabilityRow[]) {
-  if (!rows.length) return "Sin disponibilidad cargada";
+  if (!rows.length) return "Todos los días 07:00–22:00";
 
   return rows
     .slice()
-    .sort((a, b) => a.day_of_week - b.day_of_week || timeValue(a.start_time).localeCompare(timeValue(b.start_time)))
-    .map((row) => `${dayLabel(row.day_of_week)} ${timeValue(row.start_time)}–${timeValue(row.end_time)}`)
+    .sort(
+      (a, b) =>
+        a.day_of_week - b.day_of_week ||
+        timeValue(a.start_time).localeCompare(timeValue(b.start_time))
+    )
+    .map(
+      (row) =>
+        `${dayLabel(row.day_of_week)} ${timeValue(row.start_time)}–${timeValue(
+          row.end_time
+        )}`
+    )
     .join(" · ");
 }
 
+async function compressPlayerImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
 
-async function compressPlayerImage(
-  file: File
-): Promise<string> {
-  return new Promise(
-    (resolve, reject) => {
-      const reader =
-        new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer la imagen."));
 
-      reader.onerror = () =>
-        reject(
-          new Error(
-            "No se pudo leer la imagen."
-          )
+    reader.onload = () => {
+      const image = new Image();
+
+      image.onerror = () =>
+        reject(new Error("El archivo no parece ser una imagen válida."));
+
+      image.onload = () => {
+        const maxSide = 320;
+
+        const scale = Math.min(
+          1,
+          maxSide / Math.max(image.naturalWidth, image.naturalHeight)
         );
 
-      reader.onload = () => {
-        const image =
-          new Image();
+        const width = Math.max(1, Math.round(image.naturalWidth * scale));
+        const height = Math.max(1, Math.round(image.naturalHeight * scale));
 
-        image.onerror = () =>
-          reject(
-            new Error(
-              "El archivo no parece ser una imagen válida."
-            )
-          );
+        const canvas = document.createElement("canvas");
 
-        image.onload = () => {
-          const maxSide = 320;
+        canvas.width = width;
+        canvas.height = height;
 
-          const scale =
-            Math.min(
-              1,
-              maxSide /
-                Math.max(
-                  image.naturalWidth,
-                  image.naturalHeight
-                )
-            );
+        const context = canvas.getContext("2d");
 
-          const width =
-            Math.max(
-              1,
-              Math.round(
-                image.naturalWidth *
-                  scale
-              )
-            );
+        if (!context) {
+          reject(new Error("No se pudo preparar la imagen."));
+          return;
+        }
 
-          const height =
-            Math.max(
-              1,
-              Math.round(
-                image.naturalHeight *
-                  scale
-              )
-            );
+        context.drawImage(image, 0, 0, width, height);
 
-          const canvas =
-            document.createElement(
-              "canvas"
-            );
-
-          canvas.width = width;
-          canvas.height = height;
-
-          const context =
-            canvas.getContext(
-              "2d"
-            );
-
-          if (!context) {
-            reject(
-              new Error(
-                "No se pudo preparar la imagen."
-              )
-            );
-            return;
-          }
-
-          context.drawImage(
-            image,
-            0,
-            0,
-            width,
-            height
-          );
-
-          resolve(
-            canvas.toDataURL(
-              "image/jpeg",
-              0.76
-            )
-          );
-        };
-
-        image.src =
-          String(reader.result);
+        resolve(canvas.toDataURL("image/jpeg", 0.76));
       };
 
-      reader.readAsDataURL(file);
-    }
-  );
+      image.src = String(reader.result);
+    };
+
+    reader.readAsDataURL(file);
+  });
 }
 
 function PlayerVisual({
@@ -292,28 +295,14 @@ function PlayerVisual({
   name: string;
   large?: boolean;
 }) {
-  const className =
-    large
-      ? "player-avatar large"
-      : "player-avatar";
+  const className = large ? "player-avatar large" : "player-avatar";
 
   if (imageUrl) {
-    return (
-      <img
-        alt={name || "Jugador"}
-        className={className}
-        src={imageUrl}
-      />
-    );
+    return <img alt={name || "Jugador"} className={className} src={imageUrl} />;
   }
 
   return (
-    <div
-      className={className}
-      aria-label={`Avatar de ${
-        name || "jugador"
-      }`}
-    >
+    <div className={className} aria-label={`Avatar de ${name || "jugador"}`}>
       {avatarEmoji || "🎾"}
     </div>
   );
@@ -322,14 +311,16 @@ function PlayerVisual({
 export default function JugadoresPage() {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [communities, setCommunities] = useState<CommunityRow[]>([]);
-  const [playerCommunities, setPlayerCommunities] = useState<PlayerCommunityRow[]>([]);
+  const [playerCommunities, setPlayerCommunities] = useState<PlayerCommunityRow[]>(
+    []
+  );
   const [availabilityRows, setAvailabilityRows] = useState<AvailabilityRow[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
-  const [showForm, setShowForm] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<PlayerForm>(emptyForm());
   const [bulkStartTime, setBulkStartTime] = useState("07:00");
@@ -337,13 +328,24 @@ export default function JugadoresPage() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("activos");
-  const [categoryFilter, setCategoryFilter] = useState<"todas" | Category>("todas");
+  const [categoryFilter, setCategoryFilter] = useState<"todas" | Category>(
+    "todas"
+  );
   const [communityFilter, setCommunityFilter] = useState("todas");
   const [dayFilter, setDayFilter] = useState("todos");
   const [timeFilter, setTimeFilter] = useState("");
 
   useEffect(() => {
-    loadData();
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+
+      if (params.get("categoria") === "por_categorizar") {
+        setCategoryFilter("UNCATEGORIZED");
+        setStatusFilter("activos");
+      }
+    }
+
+    void loadData();
   }, []);
 
   async function loadData() {
@@ -370,6 +372,7 @@ export default function JugadoresPage() {
       if (communitiesRes.error) throw communitiesRes.error;
 
       const loadedPlayers = (playersRes.data ?? []) as PlayerRow[];
+
       setPlayers(loadedPlayers);
       setCommunities((communitiesRes.data ?? []) as CommunityRow[]);
 
@@ -406,6 +409,16 @@ export default function JugadoresPage() {
 
   const activeCount = useMemo(
     () => players.filter((player) => player.active !== false).length,
+    [players]
+  );
+
+  const pendingCategoryCount = useMemo(
+    () =>
+      players.filter(
+        (player) =>
+          player.active !== false &&
+          normalizeCategory(player.validated_category) === "UNCATEGORIZED"
+      ).length,
     [players]
   );
 
@@ -451,6 +464,11 @@ export default function JugadoresPage() {
       })
       .filter((player) => {
         if (categoryFilter === "todas") return true;
+
+        if (categoryFilter === "UNCATEGORIZED") {
+          return normalizeCategory(player.validated_category) === "UNCATEGORIZED";
+        }
+
         return (
           player.validated_category === categoryFilter ||
           player.secondary_category === categoryFilter
@@ -458,17 +476,27 @@ export default function JugadoresPage() {
       })
       .filter((player) => {
         if (communityFilter === "todas") return true;
-        return (communityIdsByPlayer.get(player.id) ?? []).includes(communityFilter);
+        return (communityIdsByPlayer.get(player.id) ?? []).includes(
+          communityFilter
+        );
       })
       .filter((player) => {
         if (selectedDay === null && !selectedTime) return true;
 
-        return (availabilityByPlayer.get(player.id) ?? []).some((row) => {
-          if (selectedDay !== null && row.day_of_week !== selectedDay) return false;
+        const rows = availabilityByPlayer.get(player.id) ?? [];
+
+        if (!rows.length) return true;
+
+        return rows.some((row) => {
+          if (selectedDay !== null && row.day_of_week !== selectedDay) {
+            return false;
+          }
+
           if (!selectedTime) return true;
 
           const start = timeValue(row.start_time);
           const end = timeValue(row.end_time);
+
           return start <= selectedTime && selectedTime <= end;
         });
       })
@@ -509,7 +537,7 @@ export default function JugadoresPage() {
     setForm(emptyForm());
     setBulkStartTime("07:00");
     setBulkEndTime("22:00");
-    setShowForm(true);
+    setShowCreateForm(true);
     setNotice("");
   }
 
@@ -519,22 +547,24 @@ export default function JugadoresPage() {
       availabilityByPlayer.get(player.id) ?? []
     );
 
+    const primaryCategory = normalizeCategory(player.validated_category);
+    const secondaryCandidate = player.secondary_category ?? "";
+
     const firstEnabledDay = availability.find((row) => row.enabled);
 
+    setShowCreateForm(false);
     setEditingId(player.id);
     setBulkStartTime(firstEnabledDay?.startTime ?? "07:00");
     setBulkEndTime(firstEnabledDay?.endTime ?? "22:00");
+
     setForm({
       firstName: player.first_name,
       lastName: player.last_name ?? "",
       whatsapp: player.whatsapp ?? "+593",
       gender: normalizeGender(player.gender),
-      primaryCategory: normalizeCategory(player.validated_category),
-      secondaryCategory: isSecondaryAllowed(
-        normalizeCategory(player.validated_category),
-        player.secondary_category ?? ""
-      )
-        ? ((player.secondary_category ?? "") as "" | Category)
+      primaryCategory,
+      secondaryCategory: isSecondaryAllowed(primaryCategory, secondaryCandidate)
+        ? (secondaryCandidate as "" | RealCategory)
         : "",
       preferredSide: normalizeSide(player.preferred_side),
       active: player.active !== false,
@@ -543,15 +573,16 @@ export default function JugadoresPage() {
       notes: player.notes ?? "",
       availabilityNotes: player.availability_notes ?? "",
       profileImageUrl: player.profile_image_url ?? "",
-      avatarEmoji: player.avatar_emoji ?? (normalizeGender(player.gender) === "mujer" ? "👩" : "👨"),
+      avatarEmoji:
+        player.avatar_emoji ??
+        (normalizeGender(player.gender) === "mujer" ? "👩" : "👨"),
     });
-    setShowForm(true);
+
     setNotice("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function closeForm() {
-    setShowForm(false);
+    setShowCreateForm(false);
     setEditingId(null);
     setForm(emptyForm());
     setBulkStartTime("07:00");
@@ -675,105 +706,67 @@ export default function JugadoresPage() {
     );
   }
 
-  function copyFirstActiveSchedule() {
-    const firstActiveDay = form.availability.find((row) => row.enabled);
-
-    if (!firstActiveDay) {
-      setNotice("Selecciona al menos un día para copiar el horario.");
-      return;
-    }
-
-    setBulkStartTime(firstActiveDay.startTime);
-    setBulkEndTime(firstActiveDay.endTime);
-
-    setForm((current) => ({
-      ...current,
-      availability: current.availability.map((row) =>
-        row.enabled
-          ? {
-              ...row,
-              startTime: firstActiveDay.startTime,
-              endTime: firstActiveDay.endTime,
-            }
-          : row
-      ),
-    }));
-
-    setNotice(
-      `Se copió ${firstActiveDay.startTime}–${firstActiveDay.endTime} a todos los días seleccionados.`
-    );
-  }
-
-  async function handlePlayerImage(
-    file?: File
-  ) {
+  async function handlePlayerImage(file?: File) {
     if (!file) return;
 
-    if (
-      !file.type.startsWith(
-        "image/"
-      )
-    ) {
-      setNotice(
-        "Selecciona un archivo de imagen."
-      );
+    if (!file.type.startsWith("image/")) {
+      setNotice("Selecciona un archivo de imagen.");
       return;
     }
 
-    if (
-      file.size >
-      8 * 1024 * 1024
-    ) {
-      setNotice(
-        "La imagen original no puede pesar más de 8 MB."
-      );
+    if (file.size > 8 * 1024 * 1024) {
+      setNotice("La imagen original no puede pesar más de 8 MB.");
       return;
     }
 
     try {
-      const profileImageUrl =
-        await compressPlayerImage(
-          file
-        );
+      const profileImageUrl = await compressPlayerImage(file);
 
       setForm((current) => ({
         ...current,
         profileImageUrl,
       }));
 
-      setNotice(
-        "Imagen preparada. Guarda el jugador para conservarla."
-      );
+      setNotice("Imagen preparada. Guarda el jugador para conservarla.");
     } catch (error: any) {
-      setNotice(
-        `No se pudo preparar la imagen: ${error.message}`
-      );
+      setNotice(`No se pudo preparar la imagen: ${error.message}`);
     }
   }
 
   function validateForm() {
     if (!form.firstName.trim()) return "El nombre es obligatorio.";
+
     if (!form.whatsapp.trim() || form.whatsapp.trim().length < 8) {
       return "Escribe un WhatsApp válido.";
     }
+
     if (!isSecondaryAllowed(form.primaryCategory, form.secondaryCategory)) {
       return "La categoría secundaria debe ser la categoría inmediatamente superior o inferior.";
     }
 
     for (const row of form.availability.filter((item) => item.enabled)) {
-      if (!row.startTime || !row.endTime) return "Completa los horarios de los días activados.";
+      if (!row.startTime || !row.endTime) {
+        return "Completa los horarios de los días activados.";
+      }
+
       if (row.startTime >= row.endTime) {
-        return `En ${dayLabel(row.dayOfWeek)}, la hora final debe ser mayor que la inicial.`;
+        return `En ${dayLabel(
+          row.dayOfWeek
+        )}, la hora final debe ser mayor que la inicial.`;
       }
     }
 
     const existingPlayer = editingId
       ? players.find((player) => player.id === editingId)
       : null;
+
     const isActivating = form.active && existingPlayer?.active === false;
     const isCreatingActive = form.active && !editingId;
 
-    if ((isActivating || isCreatingActive) && activeCount >= FREE_ACTIVE_PLAYER_LIMIT) {
+    if (
+      (isActivating || isCreatingActive) &&
+      activeCount >= FREE_ACTIVE_PLAYER_LIMIT
+    ) {
       return `Llegaste al límite de ${FREE_ACTIVE_PLAYER_LIMIT} jugadores activos del plan gratis.`;
     }
 
@@ -802,29 +795,27 @@ export default function JugadoresPage() {
           end_time: row.endTime,
         }));
 
-      const { data, error } = await supabase.rpc(
-        "ptm_save_player_profile_v2",
-        {
-          p_account_id: DEMO_ACCOUNT_ID,
-          p_player_id: editingId,
-          p_first_name: form.firstName.trim(),
-          p_last_name: form.lastName.trim() || null,
-          p_whatsapp: form.whatsapp.trim(),
-          p_gender: form.gender,
-          p_primary_category: form.primaryCategory,
-          p_secondary_category: form.secondaryCategory || null,
-          p_preferred_side: form.preferredSide,
-          p_active: form.active,
-          p_community_ids: form.communityIds,
-          p_schedule: schedule,
-          p_notes: form.notes.trim() || null,
-          p_availability_notes: form.availabilityNotes.trim() || null,
-        }
-      );
+      const { data, error } = await supabase.rpc("ptm_save_player_profile_v2", {
+        p_account_id: DEMO_ACCOUNT_ID,
+        p_player_id: editingId,
+        p_first_name: form.firstName.trim(),
+        p_last_name: form.lastName.trim() || null,
+        p_whatsapp: form.whatsapp.trim(),
+        p_gender: form.gender,
+        p_primary_category: categoryToDb(form.primaryCategory),
+        p_secondary_category:
+          form.primaryCategory === "UNCATEGORIZED"
+            ? null
+            : form.secondaryCategory || null,
+        p_preferred_side: form.preferredSide,
+        p_active: form.active,
+        p_community_ids: form.communityIds,
+        p_schedule: schedule,
+        p_notes: form.notes.trim() || null,
+        p_availability_notes: form.availabilityNotes.trim() || null,
+      });
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       const result = Array.isArray(data) ? data[0] : data;
       const savedPlayerId = result?.player_id as string | undefined;
@@ -838,23 +829,14 @@ export default function JugadoresPage() {
       const imageRes = await supabase
         .from("players")
         .update({
-          profile_image_url:
-            form.profileImageUrl || null,
+          profile_image_url: form.profileImageUrl || null,
           avatar_emoji:
-            form.avatarEmoji ||
-            (form.gender === "mujer"
-              ? "👩"
-              : "👨"),
+            form.avatarEmoji || (form.gender === "mujer" ? "👩" : "👨"),
         })
-        .eq(
-          "account_id",
-          DEMO_ACCOUNT_ID
-        )
+        .eq("account_id", DEMO_ACCOUNT_ID)
         .eq("id", savedPlayerId);
 
-      if (imageRes.error) {
-        throw imageRes.error;
-      }
+      if (imageRes.error) throw imageRes.error;
 
       await loadData();
       closeForm();
@@ -864,7 +846,9 @@ export default function JugadoresPage() {
           ? "Jugador actualizado correctamente."
           : reusedExistingPlayer
             ? "El WhatsApp ya existía. Se recuperó y actualizó ese jugador correctamente."
-            : "Jugador creado correctamente."
+            : form.primaryCategory === "UNCATEGORIZED"
+              ? "Jugador creado como Por categorizar. Luego asígnale categoría."
+              : "Jugador creado correctamente."
       );
     } catch (error: any) {
       setNotice(`No se pudo guardar el jugador: ${error.message}`);
@@ -877,14 +861,18 @@ export default function JugadoresPage() {
     const willBeActive = player.active === false;
 
     if (willBeActive && activeCount >= FREE_ACTIVE_PLAYER_LIMIT) {
-      setNotice(`No puedes activar más de ${FREE_ACTIVE_PLAYER_LIMIT} jugadores en el plan gratis.`);
+      setNotice(
+        `No puedes activar más de ${FREE_ACTIVE_PLAYER_LIMIT} jugadores en el plan gratis.`
+      );
       return;
     }
 
     const confirmed = window.confirm(
       willBeActive
         ? `¿Activar a ${fullName(player)}? Volverá a aparecer para convocatorias.`
-        : `¿Desactivar a ${fullName(player)}? Ya no aparecerá para convocatorias.`
+        : `¿Desactivar a ${fullName(
+            player
+          )}? Ya no aparecerá para convocatorias.`
     );
 
     if (!confirmed) return;
@@ -900,160 +888,164 @@ export default function JugadoresPage() {
         .eq("id", player.id);
 
       if (updateRes.error) throw updateRes.error;
+
       await loadData();
+
       setNotice(willBeActive ? "Jugador activado." : "Jugador desactivado.");
     } catch (error: any) {
       setNotice(`No se pudo cambiar el estado: ${error.message}`);
     }
   }
 
-  if (loading) {
-    return <PageHeader title="Jugadores" description="Cargando jugadores..." />;
-  }
+  function renderPlayerForm(title: string, submitLabel: string) {
+    return (
+      <form className="card" style={{ marginTop: 12 }} onSubmit={handleSubmit}>
+        <div className="section-title-row">
+          <h2>{title}</h2>
 
-  return (
-    <>
-      <PageHeader
-        title="Jugadores"
-        description="Panel administrativo. El jugador puede consultar, pero no cambiar categoría, comunidades ni datos de control."
-        action={
-          <div className="row-actions">
-            <Link
-              className="btn edit"
-              href="/jugadores/importar"
-            >
-              Importar contactos
-            </Link>
-
-            <button
-              className="btn save"
-              onClick={
-                showForm
-                  ? closeForm
-                  : openCreateForm
-              }
-            >
-              {showForm
-                ? "Cerrar formulario"
-                : "Agregar manualmente"}
-            </button>
-          </div>
-        }
-      />
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row-actions">
-          <span className="badge good">Activos: {activeCount}/{FREE_ACTIVE_PLAYER_LIMIT}</span>
-          <span className="badge neutral">Total: {players.length}</span>
-          <span className="badge warn">Inactivos: {players.length - activeCount}</span>
+          <button
+            className="btn cancel-action"
+            type="button"
+            onClick={closeForm}
+            disabled={saving}
+          >
+            Cerrar
+          </button>
         </div>
 
         <p className="help-text">
-          Solo el administrador o un asistente autorizado puede cambiar categoría principal/secundaria,
-          comunidades, disponibilidad oficial, estado y notas internas.
+          Para ingresar rápido: WhatsApp, nombres, apellidos, género y categoría.
+          Si no saben la categoría, deja <strong>Por categorizar</strong>.
         </p>
 
-        {notice ? <p><strong>{notice}</strong></p> : null}
+        <div className="grid grid-3">
+          <label>
+            Nombres
+            <input
+              value={form.firstName}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  firstName: event.target.value,
+                }))
+              }
+              placeholder="Ej: Juan Carlos"
+            />
+          </label>
 
-        <button className="btn secondary" onClick={loadData}>
-          🔄 Actualizar
-        </button>
-      </div>
+          <label>
+            Apellidos
+            <input
+              value={form.lastName}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  lastName: event.target.value,
+                }))
+              }
+              placeholder="Ej: Pérez García"
+            />
+          </label>
 
-      {showForm ? (
-        <form className="card" style={{ marginBottom: 16 }} onSubmit={handleSubmit}>
-          <h2>{editingId ? "Editar jugador" : "Agregar jugador"}</h2>
+          <label>
+            WhatsApp
+            <input
+              value={form.whatsapp}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  whatsapp: event.target.value,
+                }))
+              }
+              placeholder="+593999999999"
+            />
+          </label>
 
-          <div className="grid grid-3">
-            <label>
-              Nombre
-              <input
-                value={form.firstName}
-                onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))}
-                placeholder="Ej: Juan"
-              />
-            </label>
+          <label>
+            Género
+            <select
+              value={form.gender}
+              onChange={(event) => {
+                const gender = event.target.value as Gender;
 
-            <label>
-              Apellido
-              <input
-                value={form.lastName}
-                onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))}
-                placeholder="Ej: Prueba"
-              />
-            </label>
+                setForm((current) => ({
+                  ...current,
+                  gender,
+                  avatarEmoji:
+                    current.profileImageUrl ||
+                    (current.avatarEmoji !== "👨" && current.avatarEmoji !== "👩")
+                      ? current.avatarEmoji
+                      : gender === "mujer"
+                        ? "👩"
+                        : "👨",
+                }));
+              }}
+            >
+              <option value="hombre">Hombre</option>
+              <option value="mujer">Mujer</option>
+            </select>
+          </label>
 
-            <label>
-              WhatsApp
-              <input
-                value={form.whatsapp}
-                onChange={(event) => setForm((current) => ({ ...current, whatsapp: event.target.value }))}
-                placeholder="+593999999999"
-              />
-            </label>
+          <label>
+            Categoría
+            <select
+              value={form.primaryCategory}
+              onChange={(event) => {
+                const primaryCategory = event.target.value as Category;
 
-            <label>
-              Categoría principal
-              <select
-                value={form.primaryCategory}
-                onChange={(event) => {
-                  const primaryCategory = event.target.value as Category;
-                  setForm((current) => ({
-                    ...current,
+                setForm((current) => ({
+                  ...current,
+                  primaryCategory,
+                  secondaryCategory: isSecondaryAllowed(
                     primaryCategory,
-                    secondaryCategory: isSecondaryAllowed(primaryCategory, current.secondaryCategory)
-                      ? current.secondaryCategory
-                      : "",
-                  }));
-                }}
-              >
-                {CATEGORIES.map((category) => (
-                  <option key={category.value} value={category.value}>{category.label}</option>
-                ))}
-              </select>
-            </label>
+                    current.secondaryCategory
+                  )
+                    ? current.secondaryCategory
+                    : "",
+                }));
+              }}
+            >
+              {CATEGORY_OPTIONS.map((category) => (
+                <option key={category.value} value={category.value}>
+                  {category.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
+        {form.primaryCategory === "UNCATEGORIZED" ? (
+          <div className="danger-note" style={{ marginTop: 12 }}>
+            Este jugador quedará pendiente. No debería ser invitado a partidos
+            normales hasta asignarle categoría real.
+          </div>
+        ) : null}
+
+        <details style={{ marginTop: 16 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 900 }}>
+            Opciones avanzadas: comunidades, disponibilidad, lado, foto y notas
+          </summary>
+
+          <div className="grid grid-3" style={{ marginTop: 16 }}>
             <label>
               Categoría secundaria opcional
               <select
                 value={form.secondaryCategory}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  secondaryCategory: event.target.value as "" | Category,
-                }))}
-              >
-                <option value="">Sin categoría secundaria</option>
-                {adjacentCategories(form.primaryCategory).map((category) => (
-                  <option key={category.value} value={category.value}>{category.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Género
-              <select
-                value={form.gender}
-                onChange={(event) => {
-                  const gender =
-                    event.target.value as Gender;
-
+                disabled={form.primaryCategory === "UNCATEGORIZED"}
+                onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    gender,
-                    avatarEmoji:
-                      current.profileImageUrl
-                        ? current.avatarEmoji
-                        : current.avatarEmoji === "👨" ||
-                            current.avatarEmoji === "👩"
-                          ? gender === "mujer"
-                            ? "👩"
-                            : "👨"
-                          : current.avatarEmoji,
-                  }));
-                }}
+                    secondaryCategory: event.target.value as "" | RealCategory,
+                  }))
+                }
               >
-                <option value="hombre">Hombre</option>
-                <option value="mujer">Mujer</option>
+                <option value="">Sin categoría secundaria</option>
+
+                {adjacentCategories(form.primaryCategory).map((category) => (
+                  <option key={category.value} value={category.value}>
+                    {category.label}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -1061,7 +1053,12 @@ export default function JugadoresPage() {
               Lado preferido
               <select
                 value={form.preferredSide}
-                onChange={(event) => setForm((current) => ({ ...current, preferredSide: event.target.value as Side }))}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    preferredSide: event.target.value as Side,
+                  }))
+                }
               >
                 <option value="cualquiera">Cualquiera</option>
                 <option value="drive">Drive</option>
@@ -1073,7 +1070,12 @@ export default function JugadoresPage() {
               Estado
               <select
                 value={form.active ? "activo" : "inactivo"}
-                onChange={(event) => setForm((current) => ({ ...current, active: event.target.value === "activo" }))}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    active: event.target.value === "activo",
+                  }))
+                }
               >
                 <option value="activo">Activo</option>
                 <option value="inactivo">Inactivo</option>
@@ -1081,29 +1083,20 @@ export default function JugadoresPage() {
             </label>
           </div>
 
-          <div className="player-photo-editor">
+          <div className="player-photo-editor" style={{ marginTop: 16 }}>
             <PlayerVisual
-              avatarEmoji={
-                form.avatarEmoji
-              }
-              imageUrl={
-                form.profileImageUrl
-              }
+              avatarEmoji={form.avatarEmoji}
+              imageUrl={form.profileImageUrl}
               large
-              name={[
-                form.firstName,
-                form.lastName,
-              ]
-                .filter(Boolean)
-                .join(" ")}
+              name={[form.firstName, form.lastName].filter(Boolean).join(" ")}
             />
 
             <div className="player-photo-copy">
               <h3>Foto o avatar</h3>
 
               <p className="help-text">
-                Puedes tomar una foto, elegirla
-                desde el celular o usar un avatar.
+                Opcional. Puedes tomar una foto, elegirla desde el celular o usar
+                un avatar.
               </p>
 
               <div className="row-actions">
@@ -1111,17 +1104,11 @@ export default function JugadoresPage() {
                   📷 Elegir foto
                   <input
                     accept="image/*"
-                    capture="environment"
                     hidden
                     type="file"
                     onChange={(event) => {
-                      void handlePlayerImage(
-                        event.target
-                          .files?.[0]
-                      );
-
-                      event.currentTarget.value =
-                        "";
+                      void handlePlayerImage(event.target.files?.[0]);
+                      event.currentTarget.value = "";
                     }}
                   />
                 </label>
@@ -1131,13 +1118,10 @@ export default function JugadoresPage() {
                     className="btn delete"
                     type="button"
                     onClick={() =>
-                      setForm(
-                        (current) => ({
-                          ...current,
-                          profileImageUrl:
-                            "",
-                        })
-                      )
+                      setForm((current) => ({
+                        ...current,
+                        profileImageUrl: "",
+                      }))
                     }
                   >
                     Quitar foto
@@ -1146,71 +1130,79 @@ export default function JugadoresPage() {
               </div>
 
               <div className="avatar-picker">
-                {PLAYER_AVATARS.map(
-                  (avatar) => (
-                    <button
-                      aria-label={`Usar avatar ${avatar}`}
-                      className={
-                        form.avatarEmoji ===
-                        avatar
-                          ? "avatar-option selected"
-                          : "avatar-option"
-                      }
-                      key={avatar}
-                      type="button"
-                      onClick={() =>
-                        setForm(
-                          (current) => ({
-                            ...current,
-                            avatarEmoji:
-                              avatar,
-                            profileImageUrl:
-                              "",
-                          })
-                        )
-                      }
-                    >
-                      {avatar}
-                    </button>
-                  )
-                )}
+                {PLAYER_AVATARS.map((avatar) => (
+                  <button
+                    aria-label={`Usar avatar ${avatar}`}
+                    className={
+                      form.avatarEmoji === avatar
+                        ? "avatar-option selected"
+                        : "avatar-option"
+                    }
+                    key={avatar}
+                    type="button"
+                    onClick={() =>
+                      setForm((current) => ({
+                        ...current,
+                        avatarEmoji: avatar,
+                        profileImageUrl: "",
+                      }))
+                    }
+                  >
+                    {avatar}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
 
-          <h3>Comunidades asignadas</h3>
-          <p className="help-text">Puede pertenecer a una, varias o ninguna comunidad.</p>
+          <h3 style={{ marginTop: 16 }}>Comunidades asignadas</h3>
+
+          <p className="help-text">
+            Puede pertenecer a una, varias o ninguna comunidad.
+          </p>
 
           <div className="row-actions" style={{ marginBottom: 16 }}>
-            {communities.filter((community) => community.active !== false).map((community) => (
-              <label key={community.id} className="badge neutral" style={{ cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={form.communityIds.includes(community.id)}
-                  onChange={() => toggleCommunity(community.id)}
-                  style={{ marginRight: 6 }}
-                />
-                {community.name}
-              </label>
-            ))}
+            {communities
+              .filter((community) => community.active !== false)
+              .map((community) => (
+                <label
+                  key={community.id}
+                  className="badge neutral"
+                  style={{ cursor: "pointer" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={form.communityIds.includes(community.id)}
+                    onChange={() => toggleCommunity(community.id)}
+                    style={{ marginRight: 6 }}
+                  />
+
+                  {community.name}
+                </label>
+              ))}
           </div>
 
           <h3>Disponibilidad semanal</h3>
+
           <p className="help-text">
-            Marca los días, escribe el horario una sola vez y aplícalo a todos los días seleccionados.
-            Después puedes cambiar un día específico cuando sea necesario.
+            Por defecto el jugador queda disponible todos los días de 07:00 a
+            22:00. Solo cambia esto cuando el jugador diga que NO puede algún día
+            u horario.
           </p>
 
           <div className="row-actions" style={{ marginBottom: 12 }}>
-            <button type="button" className="btn secondary" onClick={selectWeekdays}>
-              Lunes a viernes
-            </button>
-            <button type="button" className="btn secondary" onClick={selectWeekend}>
-              Fin de semana
-            </button>
             <button type="button" className="btn secondary" onClick={selectEveryDay}>
               Todos los días
             </button>
+
+            <button type="button" className="btn secondary" onClick={selectWeekdays}>
+              Lunes a viernes
+            </button>
+
+            <button type="button" className="btn secondary" onClick={selectWeekend}>
+              Fin de semana
+            </button>
+
             <button type="button" className="btn ghost" onClick={clearAvailabilityDays}>
               Limpiar días
             </button>
@@ -1242,10 +1234,6 @@ export default function JugadoresPage() {
                 Aplicar horario
               </button>
             </div>
-
-            <button type="button" className="btn secondary" onClick={copyFirstActiveSchedule}>
-              Copiar el horario del primer día activo a los demás
-            </button>
           </div>
 
           <div className="grid">
@@ -1262,14 +1250,26 @@ export default function JugadoresPage() {
                 }}
               >
                 <label style={{ cursor: "pointer", flex: "1 1 110px" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 44 }}>
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      minHeight: 44,
+                    }}
+                  >
                     <input
                       type="checkbox"
                       checked={row.enabled}
                       onChange={(event) =>
-                        updateAvailability(row.dayOfWeek, "enabled", event.target.checked)
+                        updateAvailability(
+                          row.dayOfWeek,
+                          "enabled",
+                          event.target.checked
+                        )
                       }
                     />
+
                     <strong>{dayLabel(row.dayOfWeek)}</strong>
                   </span>
                 </label>
@@ -1281,7 +1281,11 @@ export default function JugadoresPage() {
                     value={row.startTime}
                     disabled={!row.enabled}
                     onChange={(event) =>
-                      updateAvailability(row.dayOfWeek, "startTime", event.target.value)
+                      updateAvailability(
+                        row.dayOfWeek,
+                        "startTime",
+                        event.target.value
+                      )
                     }
                   />
                 </label>
@@ -1293,7 +1297,11 @@ export default function JugadoresPage() {
                     value={row.endTime}
                     disabled={!row.enabled}
                     onChange={(event) =>
-                      updateAvailability(row.dayOfWeek, "endTime", event.target.value)
+                      updateAvailability(
+                        row.dayOfWeek,
+                        "endTime",
+                        event.target.value
+                      )
                     }
                   />
                 </label>
@@ -1307,8 +1315,13 @@ export default function JugadoresPage() {
               <textarea
                 rows={3}
                 value={form.availabilityNotes}
-                onChange={(event) => setForm((current) => ({ ...current, availabilityNotes: event.target.value }))}
-                placeholder="Ej: Prefiere jugar después de las 19:00. Siempre avisar."
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    availabilityNotes: event.target.value,
+                  }))
+                }
+                placeholder="Ej: Solo puede después de las 19:00."
               />
             </label>
 
@@ -1317,22 +1330,93 @@ export default function JugadoresPage() {
               <textarea
                 rows={3}
                 value={form.notes}
-                onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    notes: event.target.value,
+                  }))
+                }
                 placeholder="Solo visible para administración."
               />
             </label>
           </div>
+        </details>
 
-          <div className="row-actions" style={{ marginTop: 16 }}>
-            <button className="btn save" type="submit" disabled={saving}>
-              {saving ? "Guardando..." : editingId ? "Guardar cambios" : "Crear jugador"}
-            </button>
-            <button className="btn cancel-action" type="button" onClick={closeForm} disabled={saving}>
-              Cancelar
+        <div className="row-actions" style={{ marginTop: 16 }}>
+          <button className="btn save" type="submit" disabled={saving}>
+            {saving ? "Guardando..." : submitLabel}
+          </button>
+
+          <button
+            className="btn cancel-action"
+            type="button"
+            onClick={closeForm}
+            disabled={saving}
+          >
+            Cancelar
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  if (loading) {
+    return <PageHeader title="Jugadores" description="Cargando jugadores..." />;
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Jugadores"
+        description="Lista rápida para operación diaria. Edita cada jugador en su misma fila."
+        action={
+          <div className="row-actions">
+            <Link className="btn edit" href="/jugadores/importar">
+              Importar contactos
+            </Link>
+
+            <button
+              className="btn save"
+              onClick={showCreateForm ? closeForm : openCreateForm}
+            >
+              {showCreateForm ? "Cerrar formulario" : "Agregar jugador"}
             </button>
           </div>
-        </form>
-      ) : null}
+        }
+      />
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="row-actions">
+          <span className="badge good">
+            Activos: {activeCount}/{FREE_ACTIVE_PLAYER_LIMIT}
+          </span>
+
+          <span className="badge neutral">Total: {players.length}</span>
+
+          <span className="badge warn">
+            Por categorizar: {pendingCategoryCount}
+          </span>
+
+          <span className="badge warn">Inactivos: {players.length - activeCount}</span>
+        </div>
+
+        <p className="help-text">
+          Los jugadores <strong>Por categorizar</strong> quedan pendientes para
+          que tú o un asistente les asigne categoría después.
+        </p>
+
+        {notice ? (
+          <p>
+            <strong>{notice}</strong>
+          </p>
+        ) : null}
+
+        <button className="btn secondary" onClick={() => void loadData()}>
+          🔄 Actualizar
+        </button>
+      </div>
+
+      {showCreateForm ? renderPlayerForm("Agregar jugador", "Crear jugador") : null}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <h2>Filtros</h2>
@@ -1349,7 +1433,12 @@ export default function JugadoresPage() {
 
           <label>
             Estado
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
+            <select
+              value={statusFilter}
+              onChange={(event) =>
+                setStatusFilter(event.target.value as StatusFilter)
+              }
+            >
               <option value="activos">Activos</option>
               <option value="inactivos">Inactivos</option>
               <option value="todos">Todos</option>
@@ -1360,116 +1449,192 @@ export default function JugadoresPage() {
             Categoría
             <select
               value={categoryFilter}
-              onChange={(event) => setCategoryFilter(event.target.value as "todas" | Category)}
+              onChange={(event) =>
+                setCategoryFilter(event.target.value as "todas" | Category)
+              }
             >
               <option value="todas">Todas</option>
-              {CATEGORIES.map((category) => (
-                <option key={category.value} value={category.value}>{category.label}</option>
+
+              {CATEGORY_OPTIONS.map((category) => (
+                <option key={category.value} value={category.value}>
+                  {category.label}
+                </option>
               ))}
             </select>
           </label>
 
           <label>
             Comunidad
-            <select value={communityFilter} onChange={(event) => setCommunityFilter(event.target.value)}>
+            <select
+              value={communityFilter}
+              onChange={(event) => setCommunityFilter(event.target.value)}
+            >
               <option value="todas">Todas</option>
+
               {communities.map((community) => (
-                <option key={community.id} value={community.id}>{community.name}</option>
+                <option key={community.id} value={community.id}>
+                  {community.name}
+                </option>
               ))}
             </select>
           </label>
 
           <label>
             Día disponible
-            <select value={dayFilter} onChange={(event) => setDayFilter(event.target.value)}>
+            <select
+              value={dayFilter}
+              onChange={(event) => setDayFilter(event.target.value)}
+            >
               <option value="todos">Todos</option>
+
               {DAYS.map((day) => (
-                <option key={day.value} value={day.value}>{day.label}</option>
+                <option key={day.value} value={day.value}>
+                  {day.label}
+                </option>
               ))}
             </select>
           </label>
 
           <label>
             Hora disponible
-            <input type="time" value={timeFilter} onChange={(event) => setTimeFilter(event.target.value)} />
+            <input
+              type="time"
+              value={timeFilter}
+              onChange={(event) => setTimeFilter(event.target.value)}
+            />
           </label>
         </div>
 
         <p className="help-text">Resultados: {filteredPlayers.length}</p>
       </div>
 
-      <div className="grid grid-2">
+      <div>
         {filteredPlayers.map((player) => {
           const assignedCommunityIds = communityIdsByPlayer.get(player.id) ?? [];
           const playerAvailability = availabilityByPlayer.get(player.id) ?? [];
+          const isUncategorized =
+            normalizeCategory(player.validated_category) === "UNCATEGORIZED";
 
           return (
-            <div className="card player-card" key={player.id}>
-              <div className="player-card-heading">
-                <PlayerVisual
-                  avatarEmoji={
-                    player.avatar_emoji ??
-                    (normalizeGender(
-                      player.gender
-                    ) === "mujer"
-                      ? "👩"
-                      : "👨")
-                  }
-                  imageUrl={
-                    player.profile_image_url ??
-                    ""
-                  }
-                  name={fullName(player)}
-                />
+            <div className="card" key={player.id} style={{ marginBottom: 10 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "center",
+                    minWidth: 220,
+                    flex: "1 1 260px",
+                  }}
+                >
+                  <PlayerVisual
+                    avatarEmoji={
+                      player.avatar_emoji ??
+                      (normalizeGender(player.gender) === "mujer" ? "👩" : "👨")
+                    }
+                    imageUrl={player.profile_image_url ?? ""}
+                    name={fullName(player)}
+                  />
 
-                <div className="player-card-copy">
-                  <h2>
-                    {fullName(player)}
-                  </h2>
+                  <div>
+                    <h2 style={{ margin: 0 }}>{fullName(player)}</h2>
 
-                  <p>
-                    {player.whatsapp ||
-                      "Sin WhatsApp"}
-                  </p>
+                    <p className="help-text" style={{ margin: "4px 0 0" }}>
+                      {player.whatsapp || "Sin WhatsApp"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="row-actions" style={{ flex: "2 1 420px" }}>
+                  <span className={player.active !== false ? "badge good" : "badge warn"}>
+                    {player.active !== false ? "Activo" : "Inactivo"}
+                  </span>
+
+                  <span className={isUncategorized ? "badge warn" : "badge neutral"}>
+                    {categoryLabel(player.validated_category)}
+                  </span>
+
+                  {player.secondary_category ? (
+                    <span className="badge neutral">
+                      También {categoryLabel(player.secondary_category)}
+                    </span>
+                  ) : null}
+
+                  <span className="badge neutral">
+                    {normalizeGender(player.gender) === "mujer" ? "Mujer" : "Hombre"}
+                  </span>
+                </div>
+
+                <div className="row-actions">
+                  <button
+                    className="btn edit"
+                    onClick={() =>
+                      editingId === player.id ? closeForm() : openEditForm(player)
+                    }
+                  >
+                    {editingId === player.id ? "Cerrar" : "Editar"}
+                  </button>
+
+                  <button
+                    className={
+                      player.active !== false ? "btn deactivate" : "btn activate"
+                    }
+                    onClick={() => void toggleActive(player)}
+                  >
+                    {player.active !== false ? "Desactivar" : "Activar"}
+                  </button>
                 </div>
               </div>
 
-              <div className="row-actions">
-                <span className={player.active !== false ? "badge good" : "badge warn"}>
-                  {player.active !== false ? "Activo" : "Inactivo"}
-                </span>
-                <span className="badge neutral">{categoryLabel(player.validated_category)}</span>
-                {player.secondary_category ? (
-                  <span className="badge neutral">También {categoryLabel(player.secondary_category)}</span>
-                ) : null}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gap: 10,
+                  marginTop: 12,
+                }}
+              >
+                <p style={{ margin: 0 }}>
+                  <strong>Comunidades:</strong>{" "}
+                  {assignedCommunityIds.length
+                    ? assignedCommunityIds
+                        .map((id) => communityNameById.get(id) ?? "Comunidad")
+                        .join(", ")
+                    : "Sin comunidad"}
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  <strong>Disponibilidad:</strong>{" "}
+                  {availabilitySummary(playerAvailability)}
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  <strong>Lado:</strong>{" "}
+                  {normalizeSide(player.preferred_side) === "reves"
+                    ? "Revés"
+                    : normalizeSide(player.preferred_side) === "drive"
+                      ? "Drive"
+                      : "Cualquiera"}
+                </p>
               </div>
-
-              <p><strong>Género:</strong> {normalizeGender(player.gender) === "mujer" ? "Mujer" : "Hombre"}</p>
-              <p><strong>Lado:</strong> {normalizeSide(player.preferred_side) === "reves" ? "Revés" : normalizeSide(player.preferred_side) === "drive" ? "Drive" : "Cualquiera"}</p>
-
-              <p>
-                <strong>Comunidades:</strong>{" "}
-                {assignedCommunityIds.length
-                  ? assignedCommunityIds.map((id) => communityNameById.get(id) ?? "Comunidad").join(", ")
-                  : "Sin comunidad"}
-              </p>
-
-              <p><strong>Disponibilidad:</strong> {availabilitySummary(playerAvailability)}</p>
-
-              {player.availability_notes ? (
-                <p><strong>Nota de disponibilidad:</strong> {player.availability_notes}</p>
-              ) : null}
 
               {player.notes ? (
-                <p><strong>Nota interna:</strong> {player.notes}</p>
+                <p style={{ marginTop: 10 }}>
+                  <strong>Nota:</strong> {player.notes}
+                </p>
               ) : null}
 
-              <div className="row-actions">
-                <button className="btn edit" onClick={() => openEditForm(player)}>Editar</button>
-                <button className={player.active !== false ? "btn deactivate" : "btn activate"} onClick={() => toggleActive(player)}>
-                  {player.active !== false ? "Desactivar" : "Activar"}
-                </button>
-              </div>
+              {editingId === player.id
+                ? renderPlayerForm(`Editar ${fullName(player)}`, "Guardar cambios")
+                : null}
             </div>
           );
         })}
@@ -1478,7 +1643,10 @@ export default function JugadoresPage() {
       {!filteredPlayers.length ? (
         <div className="card">
           <h2>No hay jugadores con esos filtros</h2>
-          <p className="help-text">Prueba quitar algún filtro o agrega un jugador nuevo.</p>
+
+          <p className="help-text">
+            Prueba quitar algún filtro o agrega un jugador nuevo.
+          </p>
         </div>
       ) : null}
     </>
