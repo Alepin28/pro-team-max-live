@@ -111,7 +111,9 @@ function defaultFullAvailability(): AvailabilityDraft[] {
   }));
 }
 
-function weeklyAvailabilityFromRows(rows: AvailabilityRow[] = []): AvailabilityDraft[] {
+function weeklyAvailabilityFromRows(
+  rows: AvailabilityRow[] = []
+): AvailabilityDraft[] {
   if (!rows.length) {
     return defaultFullAvailability();
   }
@@ -181,10 +183,23 @@ function normalizeSide(value?: string | null): Side {
 
 function categoryLabel(value?: string | null) {
   const normalized = normalizeCategory(value);
+
   return (
     CATEGORY_OPTIONS.find((item) => item.value === normalized)?.label ??
     "Por categorizar"
   );
+}
+
+function shortCategoryLabel(value?: string | null) {
+  const label = categoryLabel(value);
+
+  if (label === "Por categorizar") return "Sin categoría";
+
+  return label;
+}
+
+function genderLabel(value?: string | null) {
+  return normalizeGender(value) === "mujer" ? "Mujer" : "Hombre";
 }
 
 function dayLabel(value: number) {
@@ -311,10 +326,12 @@ function PlayerVisual({
 export default function JugadoresPage() {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [communities, setCommunities] = useState<CommunityRow[]>([]);
-  const [playerCommunities, setPlayerCommunities] = useState<PlayerCommunityRow[]>(
+  const [playerCommunities, setPlayerCommunities] = useState<
+    PlayerCommunityRow[]
+  >([]);
+  const [availabilityRows, setAvailabilityRows] = useState<AvailabilityRow[]>(
     []
   );
-  const [availabilityRows, setAvailabilityRows] = useState<AvailabilityRow[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -466,7 +483,9 @@ export default function JugadoresPage() {
         if (categoryFilter === "todas") return true;
 
         if (categoryFilter === "UNCATEGORIZED") {
-          return normalizeCategory(player.validated_category) === "UNCATEGORIZED";
+          return (
+            normalizeCategory(player.validated_category) === "UNCATEGORIZED"
+          );
         }
 
         return (
@@ -476,6 +495,7 @@ export default function JugadoresPage() {
       })
       .filter((player) => {
         if (communityFilter === "todas") return true;
+
         return (communityIdsByPlayer.get(player.id) ?? []).includes(
           communityFilter
         );
@@ -531,6 +551,15 @@ export default function JugadoresPage() {
     availabilityByPlayer,
     communityNameById,
   ]);
+
+  function clearFilters() {
+    setSearch("");
+    setStatusFilter("activos");
+    setCategoryFilter("todas");
+    setCommunityFilter("todas");
+    setDayFilter("todos");
+    setTimeFilter("");
+  }
 
   function openCreateForm() {
     setEditingId(null);
@@ -857,45 +886,535 @@ export default function JugadoresPage() {
     }
   }
 
-  async function toggleActive(player: PlayerRow) {
-    const willBeActive = player.active === false;
-
-    if (willBeActive && activeCount >= FREE_ACTIVE_PLAYER_LIMIT) {
-      setNotice(
-        `No puedes activar más de ${FREE_ACTIVE_PLAYER_LIMIT} jugadores en el plan gratis.`
-      );
-      return;
-    }
-
-    const confirmed = window.confirm(
-      willBeActive
-        ? `¿Activar a ${fullName(player)}? Volverá a aparecer para convocatorias.`
-        : `¿Desactivar a ${fullName(
-            player
-          )}? Ya no aparecerá para convocatorias.`
-    );
-
-    if (!confirmed) return;
-
-    try {
-      const updateRes = await supabase
-        .from("players")
-        .update({
-          active: willBeActive,
-          last_activity_at: new Date().toISOString(),
-        })
-        .eq("account_id", DEMO_ACCOUNT_ID)
-        .eq("id", player.id);
-
-      if (updateRes.error) throw updateRes.error;
-
-      await loadData();
-
-      setNotice(willBeActive ? "Jugador activado." : "Jugador desactivado.");
-    } catch (error: any) {
-      setNotice(`No se pudo cambiar el estado: ${error.message}`);
-    }
+  if (loading) {
+    return <PageHeader title="Jugadores" description="Cargando jugadores..." />;
   }
+
+  return (
+    <>
+      <style>{`
+        .players-mobile-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .players-summary-card {
+          margin-bottom: 12px !important;
+        }
+
+        .players-filters-card {
+          margin-bottom: 12px !important;
+        }
+
+        .players-filter-top {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
+          align-items: end;
+        }
+
+        .players-filter-top label {
+          margin: 0;
+        }
+
+        .players-filter-details {
+          margin-top: 10px;
+        }
+
+        .players-filter-details summary {
+          cursor: pointer;
+          font-weight: 900;
+          color: #334155;
+          list-style: none;
+        }
+
+        .players-filter-details summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .players-filter-details summary::before {
+          content: "⚙️ ";
+        }
+
+        .player-compact-card {
+          padding: 12px 14px !important;
+          border-radius: 18px !important;
+          margin-bottom: 0 !important;
+        }
+
+        .player-compact-top {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          gap: 12px;
+          align-items: center;
+        }
+
+        .player-compact-card .player-avatar {
+          width: 46px !important;
+          height: 46px !important;
+          min-width: 46px !important;
+          min-height: 46px !important;
+          font-size: 23px !important;
+        }
+
+        .player-compact-info {
+          min-width: 0;
+        }
+
+        .player-compact-name {
+          margin: 0;
+          font-size: 18px;
+          line-height: 1.05;
+          color: #0f172a;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .player-compact-phone {
+          margin-top: 3px;
+          font-size: 12px;
+          line-height: 1.1;
+          color: #64748b;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .player-compact-badges {
+          display: flex;
+          flex-wrap: nowrap;
+          gap: 5px;
+          margin-top: 6px;
+          overflow: hidden;
+        }
+
+        .player-compact-badge {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 999px;
+          padding: 3px 8px;
+          font-size: 11px;
+          line-height: 1.1;
+          font-weight: 900;
+          white-space: nowrap;
+          max-width: 112px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          background: #e5e7eb;
+          color: #334155;
+        }
+
+        .player-compact-badge.good {
+          background: #ccfbf1;
+          color: #0f766e;
+        }
+
+        .player-compact-badge.warn {
+          background: #fef3c7;
+          color: #92400e;
+        }
+
+        .player-compact-edit {
+          min-height: 36px !important;
+          padding: 8px 12px !important;
+          border-radius: 12px !important;
+          font-size: 13px !important;
+          white-space: nowrap;
+        }
+
+        .player-compact-editor {
+          margin-top: 10px;
+        }
+
+        @media (max-width: 700px) {
+          .players-page-description {
+            display: none;
+          }
+
+          .players-summary-card {
+            padding: 9px 10px !important;
+            border-radius: 14px !important;
+            margin-bottom: 8px !important;
+          }
+
+          .players-summary-card .help-text {
+            display: none;
+          }
+
+          .players-summary-card .row-actions {
+            gap: 5px !important;
+          }
+
+          .players-summary-card .badge {
+            padding: 4px 7px !important;
+            font-size: 10.5px !important;
+          }
+
+          .players-summary-card .btn {
+            min-height: 30px !important;
+            padding: 5px 8px !important;
+            font-size: 11px !important;
+          }
+
+          .players-filters-card {
+            padding: 9px 10px !important;
+            border-radius: 14px !important;
+            margin-bottom: 8px !important;
+          }
+
+          .players-filter-top {
+            grid-template-columns: minmax(0, 1fr) 74px;
+            gap: 7px;
+          }
+
+          .players-filter-top input {
+            min-height: 36px !important;
+            padding: 7px 10px !important;
+            font-size: 13px !important;
+          }
+
+          .players-filter-top .btn {
+            min-height: 36px !important;
+            padding: 7px 8px !important;
+            font-size: 11px !important;
+          }
+
+          .players-filter-details summary {
+            font-size: 12px;
+          }
+
+          .players-filter-details .grid {
+            gap: 8px !important;
+          }
+
+          .players-filter-details label {
+            font-size: 11px !important;
+          }
+
+          .players-filter-details select,
+          .players-filter-details input {
+            min-height: 34px !important;
+            padding: 6px 9px !important;
+            font-size: 12px !important;
+          }
+
+          .player-compact-card {
+            padding: 7px 9px !important;
+            border-radius: 13px !important;
+            min-height: 70px;
+          }
+
+          .player-compact-top {
+            grid-template-columns: 34px minmax(0, 1fr) 62px;
+            gap: 8px;
+          }
+
+          .player-compact-card .player-avatar {
+            width: 34px !important;
+            height: 34px !important;
+            min-width: 34px !important;
+            min-height: 34px !important;
+            font-size: 17px !important;
+          }
+
+          .player-compact-name {
+            font-size: 13.5px;
+            line-height: 1.05;
+          }
+
+          .player-compact-phone {
+            font-size: 10.5px;
+            margin-top: 1px;
+          }
+
+          .player-compact-badges {
+            gap: 3px;
+            margin-top: 4px;
+          }
+
+          .player-compact-badge {
+            padding: 2px 5px;
+            font-size: 9.5px;
+            max-width: 78px;
+          }
+
+          .player-compact-badge.status-badge {
+            max-width: 52px;
+          }
+
+          .player-compact-badge.gender-badge {
+            max-width: 48px;
+          }
+
+          .player-compact-edit {
+            width: 100%;
+            min-height: 30px !important;
+            padding: 5px 6px !important;
+            border-radius: 10px !important;
+            font-size: 11px !important;
+          }
+
+          .player-compact-editor .card {
+            padding: 11px !important;
+            border-radius: 14px !important;
+          }
+
+          .player-compact-editor h2 {
+            font-size: 18px !important;
+          }
+
+          .player-compact-editor .help-text {
+            font-size: 12px !important;
+          }
+        }
+      `}</style>
+
+      <PageHeader
+        title="Jugadores"
+        description="Lista rápida para operación diaria. Edita cada jugador en su misma fila."
+        action={
+          <div className="row-actions">
+            <Link className="btn edit" href="/jugadores/importar">
+              Importar contactos
+            </Link>
+
+            <button
+              className="btn save"
+              type="button"
+              onClick={showCreateForm ? closeForm : openCreateForm}
+            >
+              {showCreateForm ? "Cerrar formulario" : "Agregar jugador"}
+            </button>
+          </div>
+        }
+      />
+
+      <div className="card players-summary-card">
+        <div className="row-actions">
+          <span className="badge good">
+            Activos: {activeCount}/{FREE_ACTIVE_PLAYER_LIMIT}
+          </span>
+
+          <span className="badge neutral">Total: {players.length}</span>
+
+          <span className="badge warn">
+            Por categorizar: {pendingCategoryCount}
+          </span>
+
+          <span className="badge warn">
+            Inactivos: {players.length - activeCount}
+          </span>
+        </div>
+
+        <p className="help-text">
+          Los jugadores <strong>Por categorizar</strong> quedan pendientes para
+          que tú o un asistente les asigne categoría después.
+        </p>
+
+        {notice ? (
+          <p>
+            <strong>{notice}</strong>
+          </p>
+        ) : null}
+
+        <button className="btn secondary" type="button" onClick={() => void loadData()}>
+          🔄 Actualizar
+        </button>
+      </div>
+
+      {showCreateForm
+        ? renderPlayerForm("Agregar jugador", "Crear jugador")
+        : null}
+
+      <div className="card players-filters-card">
+        <div className="players-filter-top">
+          <label>
+            Buscar
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Nombre o WhatsApp"
+            />
+          </label>
+
+          <button className="btn ghost" type="button" onClick={clearFilters}>
+            Limpiar
+          </button>
+        </div>
+
+        <details className="players-filter-details">
+          <summary>Filtros avanzados · {filteredPlayers.length} resultado(s)</summary>
+
+          <div className="grid grid-3" style={{ marginTop: 12 }}>
+            <label>
+              Estado
+              <select
+                value={statusFilter}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value as StatusFilter)
+                }
+              >
+                <option value="activos">Activos</option>
+                <option value="inactivos">Inactivos</option>
+                <option value="todos">Todos</option>
+              </select>
+            </label>
+
+            <label>
+              Categoría
+              <select
+                value={categoryFilter}
+                onChange={(event) =>
+                  setCategoryFilter(event.target.value as "todas" | Category)
+                }
+              >
+                <option value="todas">Todas</option>
+
+                {CATEGORY_OPTIONS.map((category) => (
+                  <option key={category.value} value={category.value}>
+                    {category.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Comunidad
+              <select
+                value={communityFilter}
+                onChange={(event) => setCommunityFilter(event.target.value)}
+              >
+                <option value="todas">Todas</option>
+
+                {communities.map((community) => (
+                  <option key={community.id} value={community.id}>
+                    {community.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Día disponible
+              <select
+                value={dayFilter}
+                onChange={(event) => setDayFilter(event.target.value)}
+              >
+                <option value="todos">Todos</option>
+
+                {DAYS.map((day) => (
+                  <option key={day.value} value={day.value}>
+                    {day.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Hora disponible
+              <input
+                type="time"
+                value={timeFilter}
+                onChange={(event) => setTimeFilter(event.target.value)}
+              />
+            </label>
+          </div>
+        </details>
+      </div>
+
+      <div className="players-mobile-list">
+        {filteredPlayers.map((player) => {
+          const isUncategorized =
+            normalizeCategory(player.validated_category) === "UNCATEGORIZED";
+          const playerName = fullName(player) || "Sin nombre";
+          const isActive = player.active !== false;
+
+          return (
+            <div className="card player-compact-card" key={player.id}>
+              <div className="player-compact-top">
+                <PlayerVisual
+                  avatarEmoji={
+                    player.avatar_emoji ??
+                    (normalizeGender(player.gender) === "mujer" ? "👩" : "👨")
+                  }
+                  imageUrl={player.profile_image_url ?? ""}
+                  name={playerName}
+                />
+
+                <div className="player-compact-info">
+                  <h2 className="player-compact-name">{playerName}</h2>
+
+                  <div className="player-compact-phone">
+                    {player.whatsapp || "Sin WhatsApp"}
+                  </div>
+
+                  <div className="player-compact-badges">
+                    <span
+                      className={
+                        isActive
+                          ? "player-compact-badge good status-badge"
+                          : "player-compact-badge warn status-badge"
+                      }
+                    >
+                      {isActive ? "Activo" : "Inactivo"}
+                    </span>
+
+                    <span
+                      className={
+                        isUncategorized
+                          ? "player-compact-badge warn"
+                          : "player-compact-badge"
+                      }
+                    >
+                      {shortCategoryLabel(player.validated_category)}
+                    </span>
+
+                    {player.secondary_category ? (
+                      <span className="player-compact-badge">
+                        + {shortCategoryLabel(player.secondary_category)}
+                      </span>
+                    ) : null}
+
+                    <span className="player-compact-badge gender-badge">
+                      {genderLabel(player.gender)}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  className="btn edit player-compact-edit"
+                  type="button"
+                  onClick={() =>
+                    editingId === player.id ? closeForm() : openEditForm(player)
+                  }
+                >
+                  {editingId === player.id ? "Cerrar" : "Editar"}
+                </button>
+              </div>
+
+              {editingId === player.id ? (
+                <div className="player-compact-editor">
+                  {renderPlayerForm(`Editar ${playerName}`, "Guardar cambios")}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {!filteredPlayers.length ? (
+        <div className="card">
+          <h2>No hay jugadores con esos filtros</h2>
+
+          <p className="help-text">
+            Prueba quitar algún filtro o agrega un jugador nuevo.
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
 
   function renderPlayerForm(title: string, submitLabel: string) {
     return (
@@ -1191,19 +1710,35 @@ export default function JugadoresPage() {
           </p>
 
           <div className="row-actions" style={{ marginBottom: 12 }}>
-            <button type="button" className="btn secondary" onClick={selectEveryDay}>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={selectEveryDay}
+            >
               Todos los días
             </button>
 
-            <button type="button" className="btn secondary" onClick={selectWeekdays}>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={selectWeekdays}
+            >
               Lunes a viernes
             </button>
 
-            <button type="button" className="btn secondary" onClick={selectWeekend}>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={selectWeekend}
+            >
               Fin de semana
             </button>
 
-            <button type="button" className="btn ghost" onClick={clearAvailabilityDays}>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={clearAvailabilityDays}
+            >
               Limpiar días
             </button>
           </div>
@@ -1359,296 +1894,4 @@ export default function JugadoresPage() {
       </form>
     );
   }
-
-  if (loading) {
-    return <PageHeader title="Jugadores" description="Cargando jugadores..." />;
-  }
-
-  return (
-    <>
-      <PageHeader
-        title="Jugadores"
-        description="Lista rápida para operación diaria. Edita cada jugador en su misma fila."
-        action={
-          <div className="row-actions">
-            <Link className="btn edit" href="/jugadores/importar">
-              Importar contactos
-            </Link>
-
-            <button
-              className="btn save"
-              onClick={showCreateForm ? closeForm : openCreateForm}
-            >
-              {showCreateForm ? "Cerrar formulario" : "Agregar jugador"}
-            </button>
-          </div>
-        }
-      />
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row-actions">
-          <span className="badge good">
-            Activos: {activeCount}/{FREE_ACTIVE_PLAYER_LIMIT}
-          </span>
-
-          <span className="badge neutral">Total: {players.length}</span>
-
-          <span className="badge warn">
-            Por categorizar: {pendingCategoryCount}
-          </span>
-
-          <span className="badge warn">Inactivos: {players.length - activeCount}</span>
-        </div>
-
-        <p className="help-text">
-          Los jugadores <strong>Por categorizar</strong> quedan pendientes para
-          que tú o un asistente les asigne categoría después.
-        </p>
-
-        {notice ? (
-          <p>
-            <strong>{notice}</strong>
-          </p>
-        ) : null}
-
-        <button className="btn secondary" onClick={() => void loadData()}>
-          🔄 Actualizar
-        </button>
-      </div>
-
-      {showCreateForm ? renderPlayerForm("Agregar jugador", "Crear jugador") : null}
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h2>Filtros</h2>
-
-        <div className="grid grid-3">
-          <label>
-            Nombre o WhatsApp
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Buscar jugador"
-            />
-          </label>
-
-          <label>
-            Estado
-            <select
-              value={statusFilter}
-              onChange={(event) =>
-                setStatusFilter(event.target.value as StatusFilter)
-              }
-            >
-              <option value="activos">Activos</option>
-              <option value="inactivos">Inactivos</option>
-              <option value="todos">Todos</option>
-            </select>
-          </label>
-
-          <label>
-            Categoría
-            <select
-              value={categoryFilter}
-              onChange={(event) =>
-                setCategoryFilter(event.target.value as "todas" | Category)
-              }
-            >
-              <option value="todas">Todas</option>
-
-              {CATEGORY_OPTIONS.map((category) => (
-                <option key={category.value} value={category.value}>
-                  {category.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Comunidad
-            <select
-              value={communityFilter}
-              onChange={(event) => setCommunityFilter(event.target.value)}
-            >
-              <option value="todas">Todas</option>
-
-              {communities.map((community) => (
-                <option key={community.id} value={community.id}>
-                  {community.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Día disponible
-            <select
-              value={dayFilter}
-              onChange={(event) => setDayFilter(event.target.value)}
-            >
-              <option value="todos">Todos</option>
-
-              {DAYS.map((day) => (
-                <option key={day.value} value={day.value}>
-                  {day.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Hora disponible
-            <input
-              type="time"
-              value={timeFilter}
-              onChange={(event) => setTimeFilter(event.target.value)}
-            />
-          </label>
-        </div>
-
-        <p className="help-text">Resultados: {filteredPlayers.length}</p>
-      </div>
-
-      <div>
-        {filteredPlayers.map((player) => {
-          const assignedCommunityIds = communityIdsByPlayer.get(player.id) ?? [];
-          const playerAvailability = availabilityByPlayer.get(player.id) ?? [];
-          const isUncategorized =
-            normalizeCategory(player.validated_category) === "UNCATEGORIZED";
-
-          return (
-            <div className="card" key={player.id} style={{ marginBottom: 10 }}>
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 12,
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "center",
-                    minWidth: 220,
-                    flex: "1 1 260px",
-                  }}
-                >
-                  <PlayerVisual
-                    avatarEmoji={
-                      player.avatar_emoji ??
-                      (normalizeGender(player.gender) === "mujer" ? "👩" : "👨")
-                    }
-                    imageUrl={player.profile_image_url ?? ""}
-                    name={fullName(player)}
-                  />
-
-                  <div>
-                    <h2 style={{ margin: 0 }}>{fullName(player)}</h2>
-
-                    <p className="help-text" style={{ margin: "4px 0 0" }}>
-                      {player.whatsapp || "Sin WhatsApp"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="row-actions" style={{ flex: "2 1 420px" }}>
-                  <span className={player.active !== false ? "badge good" : "badge warn"}>
-                    {player.active !== false ? "Activo" : "Inactivo"}
-                  </span>
-
-                  <span className={isUncategorized ? "badge warn" : "badge neutral"}>
-                    {categoryLabel(player.validated_category)}
-                  </span>
-
-                  {player.secondary_category ? (
-                    <span className="badge neutral">
-                      También {categoryLabel(player.secondary_category)}
-                    </span>
-                  ) : null}
-
-                  <span className="badge neutral">
-                    {normalizeGender(player.gender) === "mujer" ? "Mujer" : "Hombre"}
-                  </span>
-                </div>
-
-                <div className="row-actions">
-                  <button
-                    className="btn edit"
-                    onClick={() =>
-                      editingId === player.id ? closeForm() : openEditForm(player)
-                    }
-                  >
-                    {editingId === player.id ? "Cerrar" : "Editar"}
-                  </button>
-
-                  <button
-                    className={
-                      player.active !== false ? "btn deactivate" : "btn activate"
-                    }
-                    onClick={() => void toggleActive(player)}
-                  >
-                    {player.active !== false ? "Desactivar" : "Activar"}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                  gap: 10,
-                  marginTop: 12,
-                }}
-              >
-                <p style={{ margin: 0 }}>
-                  <strong>Comunidades:</strong>{" "}
-                  {assignedCommunityIds.length
-                    ? assignedCommunityIds
-                        .map((id) => communityNameById.get(id) ?? "Comunidad")
-                        .join(", ")
-                    : "Sin comunidad"}
-                </p>
-
-                <p style={{ margin: 0 }}>
-                  <strong>Disponibilidad:</strong>{" "}
-                  {availabilitySummary(playerAvailability)}
-                </p>
-
-                <p style={{ margin: 0 }}>
-                  <strong>Lado:</strong>{" "}
-                  {normalizeSide(player.preferred_side) === "reves"
-                    ? "Revés"
-                    : normalizeSide(player.preferred_side) === "drive"
-                      ? "Drive"
-                      : "Cualquiera"}
-                </p>
-              </div>
-
-              {player.notes ? (
-                <p style={{ marginTop: 10 }}>
-                  <strong>Nota:</strong> {player.notes}
-                </p>
-              ) : null}
-
-              {editingId === player.id
-                ? renderPlayerForm(`Editar ${fullName(player)}`, "Guardar cambios")
-                : null}
-            </div>
-          );
-        })}
-      </div>
-
-      {!filteredPlayers.length ? (
-        <div className="card">
-          <h2>No hay jugadores con esos filtros</h2>
-
-          <p className="help-text">
-            Prueba quitar algún filtro o agrega un jugador nuevo.
-          </p>
-        </div>
-      ) : null}
-    </>
-  );
 }
