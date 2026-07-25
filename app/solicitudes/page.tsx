@@ -151,7 +151,7 @@ type ConversionDraft = {
   availabilityNotes: string;
 };
 
-const FREE_ACTIVE_PLAYER_LIMIT = 50;
+const FREE_ACTIVE_PLAYER_LIMIT = 500;
 
 const CATEGORIES: Array<{
   value: Category;

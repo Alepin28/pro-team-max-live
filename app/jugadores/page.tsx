@@ -13,7 +13,7 @@ type Gender = "hombre" | "mujer";
 type Side = "drive" | "reves" | "cualquiera";
 type StatusFilter = "activos" | "inactivos" | "todos";
 
-const FREE_ACTIVE_PLAYER_LIMIT = 50;
+const FREE_ACTIVE_PLAYER_LIMIT = 500;
 
 const PLAYER_AVATARS = ["👨", "👩", "🎾", "⭐", "🔥", "💪", "🏆", "🙂"];
 
