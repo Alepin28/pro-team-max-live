@@ -2077,7 +2077,7 @@ export default function JugadoresPage() {
         </div>
 
         <p className="help-text">
-          Para ingresar rápido: WhatsApp, nombres, apellidos, género y categoría.
+          Para ingresar rápido: WhatsApp, nombres, apellidos, género, categoría, estado y comunidad.
           Si no saben la categoría, deja <strong>Por categorizar</strong>.
         </p>
 
@@ -2175,6 +2175,22 @@ export default function JugadoresPage() {
               ))}
             </select>
           </label>
+
+          <label>
+            Estado
+            <select
+              value={form.active ? "activo" : "inactivo"}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  active: event.target.value === "activo",
+                }))
+              }
+            >
+              <option value="activo">Activo</option>
+              <option value="inactivo">Inactivo</option>
+            </select>
+          </label>
         </div>
 
         {form.primaryCategory === "UNCATEGORIZED" ? (
@@ -2184,9 +2200,42 @@ export default function JugadoresPage() {
           </div>
         ) : null}
 
+        <div className="mini-panel" style={{ marginTop: 14 }}>
+          <h3 style={{ marginTop: 0 }}>Comunidades</h3>
+
+          <p className="help-text">
+            Marca aquí la comunidad del jugador. Esto queda visible sin abrir opciones avanzadas.
+          </p>
+
+          <div className="row-actions">
+            {communities.filter((community) => community.active !== false).length ? (
+              communities
+                .filter((community) => community.active !== false)
+                .map((community) => (
+                  <label
+                    key={community.id}
+                    className="badge neutral"
+                    style={{ cursor: "pointer" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.communityIds.includes(community.id)}
+                      onChange={() => toggleCommunity(community.id)}
+                      style={{ marginRight: 6 }}
+                    />
+
+                    {community.name}
+                  </label>
+                ))
+            ) : (
+              <span className="help-text">No hay comunidades activas todavía.</span>
+            )}
+          </div>
+        </div>
+
         <details style={{ marginTop: 16 }}>
           <summary style={{ cursor: "pointer", fontWeight: 900 }}>
-            Opciones avanzadas: comunidades, disponibilidad, lado, foto y notas
+            Opciones avanzadas: disponibilidad, lado, foto y notas
           </summary>
 
           <div className="grid grid-3" style={{ marginTop: 16 }}>
@@ -2226,22 +2275,6 @@ export default function JugadoresPage() {
                 <option value="cualquiera">Cualquiera</option>
                 <option value="drive">Drive</option>
                 <option value="reves">Revés</option>
-              </select>
-            </label>
-
-            <label>
-              Estado
-              <select
-                value={form.active ? "activo" : "inactivo"}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    active: event.target.value === "activo",
-                  }))
-                }
-              >
-                <option value="activo">Activo</option>
-                <option value="inactivo">Inactivo</option>
               </select>
             </label>
           </div>
@@ -2316,33 +2349,6 @@ export default function JugadoresPage() {
                 ))}
               </div>
             </div>
-          </div>
-
-          <h3 style={{ marginTop: 16 }}>Comunidades asignadas</h3>
-
-          <p className="help-text">
-            Puede pertenecer a una, varias o ninguna comunidad.
-          </p>
-
-          <div className="row-actions" style={{ marginBottom: 16 }}>
-            {communities
-              .filter((community) => community.active !== false)
-              .map((community) => (
-                <label
-                  key={community.id}
-                  className="badge neutral"
-                  style={{ cursor: "pointer" }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={form.communityIds.includes(community.id)}
-                    onChange={() => toggleCommunity(community.id)}
-                    style={{ marginRight: 6 }}
-                  />
-
-                  {community.name}
-                </label>
-              ))}
           </div>
 
           <h3>Disponibilidad semanal</h3>
