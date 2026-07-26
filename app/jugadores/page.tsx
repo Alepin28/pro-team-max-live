@@ -336,6 +336,7 @@ export default function JugadoresPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [quickSavingPlayerId, setQuickSavingPlayerId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
 
@@ -693,6 +694,216 @@ export default function JugadoresPage() {
     } finally {
       setBulkSaving(false);
     }
+  }
+
+  async function saveQuickPlayer(
+    player: PlayerRow,
+    patch: {
+      active?: boolean;
+      gender?: Gender;
+      primaryCategory?: Category;
+    }
+  ) {
+    if (quickSavingPlayerId || bulkSaving) return;
+
+    const currentActive = player.active !== false;
+    const nextActive = patch.active ?? currentActive;
+    const nextGender = patch.gender ?? normalizeGender(player.gender);
+    const nextPrimaryCategory =
+      patch.primaryCategory ?? normalizeCategory(player.validated_category);
+
+    if (patch.active === true && player.active === false) {
+      if (activeCount >= FREE_ACTIVE_PLAYER_LIMIT) {
+        setNotice(
+          `No puedes activar más jugadores porque llegaste al límite de ${FREE_ACTIVE_PLAYER_LIMIT}.`
+        );
+        return;
+      }
+    }
+
+    const updateData: Record<string, any> = {};
+
+    if (typeof patch.active === "boolean") {
+      updateData.active = nextActive;
+    }
+
+    if (patch.gender) {
+      updateData.gender = nextGender;
+      updateData.avatar_emoji =
+        player.avatar_emoji && player.avatar_emoji !== "👨" && player.avatar_emoji !== "👩"
+          ? player.avatar_emoji
+          : nextGender === "mujer"
+            ? "👩"
+            : "👨";
+    }
+
+    if (patch.primaryCategory) {
+      updateData.validated_category = categoryToDb(nextPrimaryCategory);
+
+      if (
+        nextPrimaryCategory === "UNCATEGORIZED" ||
+        !isSecondaryAllowed(nextPrimaryCategory, player.secondary_category ?? "")
+      ) {
+        updateData.secondary_category = null;
+      }
+    }
+
+    if (!Object.keys(updateData).length) return;
+
+    setQuickSavingPlayerId(player.id);
+    setNotice(`Guardando ${fullName(player) || "jugador"}...`);
+
+    try {
+      const { error } = await supabase.rpc(
+        "ptm_quick_update_player_v1",
+        {
+          p_account_id: DEMO_ACCOUNT_ID,
+          p_player_id: player.id,
+          p_active:
+            typeof patch.active === "boolean" ? patch.active : null,
+          p_gender: patch.gender ?? null,
+          p_primary_category: patch.primaryCategory ?? null,
+          p_replace_community: false,
+          p_community_id: null,
+        }
+      );
+
+      if (error) throw error;
+
+      setPlayers((current) =>
+        current.map((item) =>
+          item.id === player.id
+            ? {
+                ...item,
+                active:
+                  typeof updateData.active === "boolean"
+                    ? updateData.active
+                    : item.active,
+                gender: updateData.gender ?? item.gender,
+                validated_category:
+                  "validated_category" in updateData
+                    ? updateData.validated_category
+                    : item.validated_category,
+                secondary_category:
+                  "secondary_category" in updateData
+                    ? updateData.secondary_category
+                    : item.secondary_category,
+                avatar_emoji: updateData.avatar_emoji ?? item.avatar_emoji,
+              }
+            : item
+        )
+      );
+
+      setNotice(`${fullName(player) || "Jugador"} actualizado.`);
+    } catch (error: any) {
+      setNotice(`No se pudo guardar el cambio rápido: ${error.message}`);
+    } finally {
+      setQuickSavingPlayerId(null);
+    }
+  }
+
+  async function saveQuickCommunity(player: PlayerRow, communityId: string) {
+    if (quickSavingPlayerId || bulkSaving) return;
+
+    setQuickSavingPlayerId(player.id);
+    setNotice(`Guardando comunidad de ${fullName(player) || "jugador"}...`);
+
+    try {
+      const { error } = await supabase.rpc(
+        "ptm_quick_update_player_v1",
+        {
+          p_account_id: DEMO_ACCOUNT_ID,
+          p_player_id: player.id,
+          p_active: null,
+          p_gender: null,
+          p_primary_category: null,
+          p_replace_community: true,
+          p_community_id: communityId || null,
+        }
+      );
+
+      if (error) throw error;
+
+      setPlayerCommunities((current) => [
+        ...current.filter((row) => row.player_id !== player.id),
+        ...(communityId
+          ? [
+              {
+                player_id: player.id,
+                community_id: communityId,
+              },
+            ]
+          : []),
+      ]);
+
+      setNotice(`${fullName(player) || "Jugador"} actualizado.`);
+    } catch (error: any) {
+      setNotice(`No se pudo cambiar la comunidad: ${error.message}`);
+    } finally {
+      setQuickSavingPlayerId(null);
+    }
+  }
+
+  async function deletePlayerBlock(playersToDelete: PlayerRow[]) {
+    if (!playersToDelete.length) {
+      setNotice("Selecciona al menos un jugador para eliminar.");
+      return;
+    }
+
+    const confirmText = window.prompt(
+      `Vas a ELIMINAR definitivamente ${playersToDelete.length} jugador(es).\n\n` +
+        "Esto es para registros de prueba o errores. Si el jugador ya tiene historial real, mejor desactívalo.\n\n" +
+        "Escribe ELIMINAR para continuar."
+    );
+
+    if (confirmText !== "ELIMINAR") {
+      setNotice("Eliminación cancelada.");
+      return;
+    }
+
+    const ids = playersToDelete.map((player) => player.id);
+
+    setBulkSaving(true);
+    setNotice("Eliminando jugadores seleccionados...");
+
+    try {
+      const { error } = await supabase.rpc(
+        "ptm_delete_players_permanent_v1",
+        {
+          p_account_id: DEMO_ACCOUNT_ID,
+          p_player_ids: ids,
+        }
+      );
+
+      if (error) throw error;
+
+      const idSet = new Set(ids);
+
+      setPlayers((current) => current.filter((player) => !idSet.has(player.id)));
+      setPlayerCommunities((current) =>
+        current.filter((row) => !idSet.has(row.player_id))
+      );
+      setAvailabilityRows((current) =>
+        current.filter((row) => !idSet.has(row.player_id))
+      );
+      setSelectedPlayerIds((current) => current.filter((id) => !idSet.has(id)));
+
+      setNotice(`${ids.length} jugador(es) eliminado(s) definitivamente.`);
+    } catch (error: any) {
+      setNotice(
+        `No se pudo eliminar. Si el jugador tiene historial real, desactívalo mejor. Detalle: ${error.message}`
+      );
+    } finally {
+      setBulkSaving(false);
+    }
+  }
+
+  async function deleteOnePlayer(player: PlayerRow) {
+    await deletePlayerBlock([player]);
+  }
+
+  async function deleteSelectedPlayers() {
+    await deletePlayerBlock(selectedPlayers);
   }
 
   function clearFilters() {
@@ -1203,6 +1414,48 @@ export default function JugadoresPage() {
           white-space: nowrap;
         }
 
+        .player-quick-edit {
+          display: grid;
+          grid-template-columns: 92px 120px 92px minmax(130px, 1fr) auto;
+          gap: 6px;
+          margin-top: 8px;
+          align-items: center;
+        }
+
+        .player-quick-edit select {
+          width: 100%;
+          min-height: 31px !important;
+          border-radius: 10px !important;
+          border: 1px solid #cbd5e1 !important;
+          background: #f8fafc !important;
+          color: #0f172a !important;
+          padding: 4px 8px !important;
+          font-size: 11px !important;
+          font-weight: 900 !important;
+          outline: none;
+        }
+
+        .player-quick-edit select:disabled,
+        .player-quick-delete:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
+        .player-quick-delete {
+          min-height: 31px !important;
+          padding: 5px 9px !important;
+          border-radius: 10px !important;
+          font-size: 11px !important;
+          white-space: nowrap;
+        }
+
+        .player-saving-text {
+          margin-top: 4px;
+          font-size: 10.5px;
+          font-weight: 900;
+          color: #2563eb;
+        }
+
         .player-compact-editor {
           margin-top: 10px;
         }
@@ -1367,6 +1620,31 @@ export default function JugadoresPage() {
             padding: 5px 6px !important;
             border-radius: 10px !important;
             font-size: 11px !important;
+          }
+
+          .player-quick-edit {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 4px;
+            margin-top: 5px;
+          }
+
+          .player-quick-edit select {
+            min-height: 27px !important;
+            padding: 3px 4px !important;
+            border-radius: 8px !important;
+            font-size: 9.5px !important;
+          }
+
+          .player-quick-delete {
+            min-height: 27px !important;
+            padding: 3px 4px !important;
+            border-radius: 8px !important;
+            font-size: 9.5px !important;
+          }
+
+          .player-saving-text {
+            font-size: 9.5px;
+            margin-top: 3px;
           }
 
           .player-compact-editor .card {
@@ -1545,8 +1823,8 @@ export default function JugadoresPage() {
             </p>
 
             <p className="players-bulk-text">
-              Primero filtra o busca, marca jugadores y luego activa o desactiva
-              todo el bloque.
+              Primero filtra o busca, marca jugadores y luego activa, desactiva
+              o elimina todo el bloque.
             </p>
           </div>
 
@@ -1586,6 +1864,15 @@ export default function JugadoresPage() {
             >
               Desactivar seleccionados
             </button>
+
+            <button
+              className="btn delete"
+              type="button"
+              onClick={() => void deleteSelectedPlayers()}
+              disabled={bulkSaving || !selectedCount}
+            >
+              Eliminar seleccionados
+            </button>
           </div>
         </div>
       </div>
@@ -1596,6 +1883,8 @@ export default function JugadoresPage() {
             normalizeCategory(player.validated_category) === "UNCATEGORIZED";
           const playerName = fullName(player) || "Sin nombre";
           const isActive = player.active !== false;
+          const primaryCommunityId = communityIdsByPlayer.get(player.id)?.[0] ?? "";
+          const isQuickSaving = quickSavingPlayerId === player.id;
 
           return (
             <div className="card player-compact-card" key={player.id}>
@@ -1657,6 +1946,85 @@ export default function JugadoresPage() {
                       {genderLabel(player.gender)}
                     </span>
                   </div>
+
+                  <div className="player-quick-edit">
+                    <select
+                      aria-label={`Estado de ${playerName}`}
+                      disabled={isQuickSaving || bulkSaving}
+                      value={isActive ? "activo" : "inactivo"}
+                      onChange={(event) =>
+                        void saveQuickPlayer(player, {
+                          active: event.target.value === "activo",
+                        })
+                      }
+                    >
+                      <option value="activo">Activo</option>
+                      <option value="inactivo">Inactivo</option>
+                    </select>
+
+                    <select
+                      aria-label={`Categoría de ${playerName}`}
+                      disabled={isQuickSaving || bulkSaving}
+                      value={normalizeCategory(player.validated_category)}
+                      onChange={(event) =>
+                        void saveQuickPlayer(player, {
+                          primaryCategory: event.target.value as Category,
+                        })
+                      }
+                    >
+                      {CATEGORY_OPTIONS.map((category) => (
+                        <option key={category.value} value={category.value}>
+                          {category.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      aria-label={`Género de ${playerName}`}
+                      disabled={isQuickSaving || bulkSaving}
+                      value={normalizeGender(player.gender)}
+                      onChange={(event) =>
+                        void saveQuickPlayer(player, {
+                          gender: event.target.value as Gender,
+                        })
+                      }
+                    >
+                      <option value="hombre">Hombre</option>
+                      <option value="mujer">Mujer</option>
+                    </select>
+
+                    <select
+                      aria-label={`Comunidad de ${playerName}`}
+                      disabled={isQuickSaving || bulkSaving}
+                      value={primaryCommunityId}
+                      onChange={(event) =>
+                        void saveQuickCommunity(player, event.target.value)
+                      }
+                    >
+                      <option value="">Sin comunidad</option>
+
+                      {communities
+                        .filter((community) => community.active !== false)
+                        .map((community) => (
+                          <option key={community.id} value={community.id}>
+                            {community.name}
+                          </option>
+                        ))}
+                    </select>
+
+                    <button
+                      className="btn delete player-quick-delete"
+                      type="button"
+                      disabled={isQuickSaving || bulkSaving}
+                      onClick={() => void deleteOnePlayer(player)}
+                    >
+                      Eliminar
+                    </button>
+                  </div>
+
+                  {isQuickSaving ? (
+                    <div className="player-saving-text">Guardando...</div>
+                  ) : null}
                 </div>
 
                 <button
@@ -1666,7 +2034,7 @@ export default function JugadoresPage() {
                     editingId === player.id ? closeForm() : openEditForm(player)
                   }
                 >
-                  {editingId === player.id ? "Cerrar" : "Editar"}
+                  {editingId === player.id ? "Cerrar" : "Más datos"}
                 </button>
               </div>
 
