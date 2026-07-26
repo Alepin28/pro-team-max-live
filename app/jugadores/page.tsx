@@ -335,7 +335,9 @@ export default function JugadoresPage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -551,6 +553,147 @@ export default function JugadoresPage() {
     availabilityByPlayer,
     communityNameById,
   ]);
+
+  const selectedPlayerIdSet = useMemo(
+    () => new Set(selectedPlayerIds),
+    [selectedPlayerIds]
+  );
+
+  const selectedPlayers = useMemo(
+    () =>
+      players.filter((player) =>
+        selectedPlayerIdSet.has(player.id)
+      ),
+    [players, selectedPlayerIdSet]
+  );
+
+  const selectedCount = selectedPlayers.length;
+
+  const allVisibleSelected = useMemo(() => {
+    if (!filteredPlayers.length) return false;
+
+    return filteredPlayers.every((player) =>
+      selectedPlayerIdSet.has(player.id)
+    );
+  }, [filteredPlayers, selectedPlayerIdSet]);
+
+  function togglePlayerSelection(playerId: string) {
+    setSelectedPlayerIds((current) =>
+      current.includes(playerId)
+        ? current.filter((id) => id !== playerId)
+        : [...current, playerId]
+    );
+  }
+
+  function selectVisiblePlayers() {
+    if (!filteredPlayers.length) {
+      setNotice("No hay jugadores visibles para seleccionar.");
+      return;
+    }
+
+    setSelectedPlayerIds((current) => {
+      const next = new Set(current);
+
+      for (const player of filteredPlayers) {
+        next.add(player.id);
+      }
+
+      return Array.from(next);
+    });
+
+    setNotice(`${filteredPlayers.length} jugador(es) visibles seleccionados.`);
+  }
+
+  function clearSelectedPlayers() {
+    setSelectedPlayerIds([]);
+    setNotice("Selección limpiada.");
+  }
+
+  async function bulkSetActive(nextActive: boolean) {
+    if (!selectedCount) {
+      setNotice("Selecciona al menos un jugador.");
+      return;
+    }
+
+    const playersToChange = selectedPlayers.filter(
+      (player) => (player.active !== false) !== nextActive
+    );
+
+    if (!playersToChange.length) {
+      setNotice(
+        nextActive
+          ? "Los jugadores seleccionados ya están activos."
+          : "Los jugadores seleccionados ya están inactivos."
+      );
+      return;
+    }
+
+    if (nextActive) {
+      const inactiveSelectedCount = playersToChange.filter(
+        (player) => player.active === false
+      ).length;
+
+      if (activeCount + inactiveSelectedCount > FREE_ACTIVE_PLAYER_LIMIT) {
+        setNotice(
+          `No se puede activar ese bloque porque pasaría el límite de ${FREE_ACTIVE_PLAYER_LIMIT} jugadores activos.`
+        );
+        return;
+      }
+    }
+
+    const actionLabel = nextActive ? "activar" : "desactivar";
+
+    const confirmed = window.confirm(
+      `¿Seguro que quieres ${actionLabel} ${playersToChange.length} jugador(es)?`
+    );
+
+    if (!confirmed) return;
+
+    setBulkSaving(true);
+    setNotice(
+      nextActive
+        ? "Activando jugadores seleccionados..."
+        : "Desactivando jugadores seleccionados..."
+    );
+
+    try {
+      const { error } = await supabase
+        .from("players")
+        .update({ active: nextActive })
+        .eq("account_id", DEMO_ACCOUNT_ID)
+        .in(
+          "id",
+          playersToChange.map((player) => player.id)
+        );
+
+      if (error) throw error;
+
+      setPlayers((current) =>
+        current.map((player) =>
+          playersToChange.some((item) => item.id === player.id)
+            ? {
+                ...player,
+                active: nextActive,
+              }
+            : player
+        )
+      );
+
+      setSelectedPlayerIds([]);
+
+      setNotice(
+        nextActive
+          ? `${playersToChange.length} jugador(es) activado(s).`
+          : `${playersToChange.length} jugador(es) desactivado(s).`
+      );
+
+      await loadData();
+    } catch (error: any) {
+      setNotice(`No se pudo actualizar el bloque: ${error.message}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  }
 
   function clearFilters() {
     setSearch("");
@@ -907,6 +1050,42 @@ export default function JugadoresPage() {
           margin-bottom: 12px !important;
         }
 
+        .players-bulk-card {
+          margin-bottom: 12px !important;
+        }
+
+        .players-bulk-layout {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 12px;
+          align-items: center;
+        }
+
+        .players-bulk-title {
+          margin: 0;
+          font-size: 15px;
+          font-weight: 950;
+          color: #0f172a;
+        }
+
+        .players-bulk-text {
+          margin: 3px 0 0;
+          color: #64748b;
+          font-size: 12px;
+        }
+
+        .player-row-checkbox-wrap {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .player-row-checkbox {
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+        }
+
         .players-filter-top {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
@@ -945,7 +1124,7 @@ export default function JugadoresPage() {
 
         .player-compact-top {
           display: grid;
-          grid-template-columns: auto minmax(0, 1fr) auto;
+          grid-template-columns: 22px auto minmax(0, 1fr) auto;
           gap: 12px;
           align-items: center;
         }
@@ -1064,6 +1243,40 @@ export default function JugadoresPage() {
             margin-bottom: 8px !important;
           }
 
+          .players-bulk-card {
+            padding: 9px 10px !important;
+            border-radius: 14px !important;
+            margin-bottom: 8px !important;
+          }
+
+          .players-bulk-layout {
+            grid-template-columns: 1fr;
+            gap: 8px;
+          }
+
+          .players-bulk-title {
+            font-size: 13px;
+          }
+
+          .players-bulk-text {
+            font-size: 11px;
+          }
+
+          .players-bulk-card .row-actions {
+            gap: 5px !important;
+          }
+
+          .players-bulk-card .btn {
+            min-height: 30px !important;
+            padding: 5px 7px !important;
+            font-size: 10.5px !important;
+          }
+
+          .player-row-checkbox {
+            width: 16px;
+            height: 16px;
+          }
+
           .players-filter-top {
             grid-template-columns: minmax(0, 1fr) 74px;
             gap: 7px;
@@ -1107,8 +1320,8 @@ export default function JugadoresPage() {
           }
 
           .player-compact-top {
-            grid-template-columns: 34px minmax(0, 1fr) 62px;
-            gap: 8px;
+            grid-template-columns: 18px 34px minmax(0, 1fr) 62px;
+            gap: 6px;
           }
 
           .player-compact-card .player-avatar {
@@ -1324,6 +1537,59 @@ export default function JugadoresPage() {
         </details>
       </div>
 
+      <div className="card players-bulk-card">
+        <div className="players-bulk-layout">
+          <div>
+            <p className="players-bulk-title">
+              Acciones por bloque · {selectedCount} seleccionado(s)
+            </p>
+
+            <p className="players-bulk-text">
+              Primero filtra o busca, marca jugadores y luego activa o desactiva
+              todo el bloque.
+            </p>
+          </div>
+
+          <div className="row-actions">
+            <button
+              className="btn secondary"
+              type="button"
+              onClick={selectVisiblePlayers}
+              disabled={bulkSaving || !filteredPlayers.length || allVisibleSelected}
+            >
+              Seleccionar visibles
+            </button>
+
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={clearSelectedPlayers}
+              disabled={bulkSaving || !selectedCount}
+            >
+              Limpiar selección
+            </button>
+
+            <button
+              className="btn save"
+              type="button"
+              onClick={() => void bulkSetActive(true)}
+              disabled={bulkSaving || !selectedCount}
+            >
+              Activar seleccionados
+            </button>
+
+            <button
+              className="btn delete"
+              type="button"
+              onClick={() => void bulkSetActive(false)}
+              disabled={bulkSaving || !selectedCount}
+            >
+              Desactivar seleccionados
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="players-mobile-list">
         {filteredPlayers.map((player) => {
           const isUncategorized =
@@ -1334,6 +1600,16 @@ export default function JugadoresPage() {
           return (
             <div className="card player-compact-card" key={player.id}>
               <div className="player-compact-top">
+                <label className="player-row-checkbox-wrap" title="Seleccionar jugador">
+                  <input
+                    aria-label={`Seleccionar ${playerName}`}
+                    checked={selectedPlayerIdSet.has(player.id)}
+                    className="player-row-checkbox"
+                    type="checkbox"
+                    onChange={() => togglePlayerSelection(player.id)}
+                  />
+                </label>
+
                 <PlayerVisual
                   avatarEmoji={
                     player.avatar_emoji ??
