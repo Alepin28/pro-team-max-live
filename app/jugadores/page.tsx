@@ -108,6 +108,66 @@ function fullName(player: PlayerRow) {
   return [player.first_name, player.last_name].filter(Boolean).join(" ");
 }
 
+function normalizeDuplicatePhone(value?: string | null) {
+  const digits = (value ?? "").replace(/\D/g, "");
+  if (digits.length < 9) return "";
+  return digits.slice(-9);
+}
+
+function normalizeDuplicateName(player: PlayerRow) {
+  const normalized = fullName(player)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  const words = normalized.split(" ").filter(Boolean);
+  return words.length >= 2 && normalized.length >= 5 ? normalized : "";
+}
+
+function duplicateReasonsByPlayer(players: PlayerRow[]) {
+  const phones = new Map<string, PlayerRow[]>();
+  const names = new Map<string, PlayerRow[]>();
+  const reasons = new Map<string, Set<string>>();
+
+  for (const player of players) {
+    const phone = normalizeDuplicatePhone(player.whatsapp);
+    const name = normalizeDuplicateName(player);
+
+    if (phone) phones.set(phone, [...(phones.get(phone) ?? []), player]);
+    if (name) names.set(name, [...(names.get(name) ?? []), player]);
+  }
+
+  function addReason(playerId: string, reason: string) {
+    const current = reasons.get(playerId) ?? new Set<string>();
+    current.add(reason);
+    reasons.set(playerId, current);
+  }
+
+  for (const [phone, matchingPlayers] of phones) {
+    if (matchingPlayers.length < 2) continue;
+    for (const player of matchingPlayers) {
+      addReason(player.id, `Mismo WhatsApp: ${phone}`);
+    }
+  }
+
+  for (const matchingPlayers of names.values()) {
+    if (matchingPlayers.length < 2) continue;
+    for (const player of matchingPlayers) {
+      addReason(player.id, "Mismo nombre y apellido");
+    }
+  }
+
+  return new Map(
+    Array.from(reasons.entries()).map(([playerId, playerReasons]) => [
+      playerId,
+      Array.from(playerReasons).join(" · "),
+    ])
+  );
+}
+
 function normalizeCategory(value?: string | null): Category {
   if (!value) return "UNCATEGORIZED";
   if (
@@ -315,6 +375,7 @@ export default function JugadoresPage() {
   const [communityFilter, setCommunityFilter] = useState("todas");
   const [dayFilter, setDayFilter] = useState("todos");
   const [timeFilter, setTimeFilter] = useState("");
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -399,6 +460,18 @@ export default function JugadoresPage() {
     [players]
   );
 
+  const duplicateReasonByPlayer = useMemo(
+    () => duplicateReasonsByPlayer(players),
+    [players]
+  );
+
+  const duplicatePlayerIdSet = useMemo(
+    () => new Set(duplicateReasonByPlayer.keys()),
+    [duplicateReasonByPlayer]
+  );
+
+  const duplicateCount = duplicatePlayerIdSet.size;
+
   const communityIdsByPlayer = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const row of playerCommunities) {
@@ -435,6 +508,10 @@ export default function JugadoresPage() {
         if (statusFilter === "inactivos") return player.active === false;
         return true;
       })
+      .filter(
+        (player) =>
+          !showDuplicatesOnly || duplicatePlayerIdSet.has(player.id)
+      )
       .filter((player) => {
         if (categoryFilter === "todas") return true;
         if (categoryFilter === "UNCATEGORIZED") {
@@ -491,6 +568,8 @@ export default function JugadoresPage() {
     communityFilter,
     dayFilter,
     timeFilter,
+    showDuplicatesOnly,
+    duplicatePlayerIdSet,
     communityIdsByPlayer,
     availabilityByPlayer,
     communityNameById,
@@ -718,6 +797,29 @@ export default function JugadoresPage() {
     setCommunityFilter("todas");
     setDayFilter("todos");
     setTimeFilter("");
+    setShowDuplicatesOnly(false);
+  }
+
+  function toggleDuplicatesView() {
+    const nextValue = !showDuplicatesOnly;
+    setShowDuplicatesOnly(nextValue);
+
+    if (nextValue) {
+      setSearch("");
+      setStatusFilter("todos");
+      setCategoryFilter("todas");
+      setCommunityFilter("todas");
+      setDayFilter("todos");
+      setTimeFilter("");
+      setSelectedPlayerIds([]);
+      setNotice(
+        duplicateCount
+          ? `Encontré ${duplicateCount} jugador(es) que conviene revisar. No elimines ambos registros: conserva el correcto.`
+          : "No encontré posibles duplicados por WhatsApp o por nombre completo."
+      );
+    } else {
+      setNotice("");
+    }
   }
 
   function toggleCommunity(communityId: string) {
@@ -1355,6 +1457,10 @@ export default function JugadoresPage() {
         .player-compact-badge { display: inline-flex; border-radius: 999px; padding: 3px 7px; background: #e5e7eb; color: #334155; font-size: 10px; font-weight: 900; white-space: nowrap; max-width: 115px; overflow: hidden; text-overflow: ellipsis; }
         .player-compact-badge.good { background: #ccfbf1; color: #0f766e; }
         .player-compact-badge.warn { background: #fef3c7; color: #92400e; }
+        .player-compact-badge.duplicate { background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; max-width: 230px; }
+        .duplicate-review-card { border: 2px solid #f59e0b !important; background: #fffbeb !important; }
+        .duplicate-review-card h2 { margin: 0 0 4px; font-size: 16px; }
+        .duplicate-review-card p { margin: 0; color: #78350f; font-size: 13px; }
         .player-compact-edit { min-height: 34px !important; padding: 7px 10px !important; font-size: 12px !important; }
         .player-row-secondary { margin-top: 7px; padding-top: 7px; border-top: 1px solid #e2e8f0; display: flex; gap: 8px; justify-content: space-between; align-items: center; }
         .player-row-secondary-text { min-width: 0; color: #64748b; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1456,9 +1562,19 @@ export default function JugadoresPage() {
           <span className="badge warn">
             Por categorizar: {pendingCategoryCount}
           </span>
+          <span className={duplicateCount ? "badge warn" : "badge neutral"}>
+            Posibles duplicados: {duplicateCount}
+          </span>
           <span className="badge neutral">
             Inactivos: {players.length - activeCount}
           </span>
+          <button
+            className={showDuplicatesOnly ? "btn edit" : "btn secondary"}
+            type="button"
+            onClick={toggleDuplicatesView}
+          >
+            {showDuplicatesOnly ? "Ver todos" : "Revisar duplicados"}
+          </button>
           <button className="btn secondary" type="button" onClick={() => void loadData(true)}>
             Actualizar
           </button>
@@ -1468,6 +1584,17 @@ export default function JugadoresPage() {
       {notice ? (
         <div className="card notice-card">
           <strong>{notice}</strong>
+        </div>
+      ) : null}
+
+      {showDuplicatesOnly ? (
+        <div className="card duplicate-review-card">
+          <h2>Revisión de posibles duplicados</h2>
+          <p>
+            El sistema marca coincidencias exactas de WhatsApp o de nombre y apellido.
+            Revisa uno por uno, conserva el registro correcto y elimina únicamente la copia
+            falsa o vacía. Si ambos tienen historial, no elimines ninguno todavía.
+          </p>
         </div>
       ) : null}
 
@@ -1624,6 +1751,7 @@ export default function JugadoresPage() {
           const isActive = player.active !== false;
           const isEditing = editingId === player.id;
           const playerAvailability = availabilityByPlayer.get(player.id) ?? [];
+          const duplicateReason = duplicateReasonByPlayer.get(player.id);
 
           return (
             <div className="card player-compact-card" key={player.id}>
@@ -1651,6 +1779,11 @@ export default function JugadoresPage() {
                     {player.whatsapp || "Sin WhatsApp"}
                   </p>
                   <div className="player-compact-badges">
+                    {duplicateReason ? (
+                      <span className="player-compact-badge duplicate">
+                        ⚠ {duplicateReason}
+                      </span>
+                    ) : null}
                     <span
                       className={`player-compact-badge ${
                         isActive ? "good" : "warn"
