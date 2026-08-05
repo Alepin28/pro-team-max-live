@@ -11,6 +11,7 @@ type CommunityRow = {
   id: string;
   sport_id: string | null;
   name: string;
+  whatsapp: string | null;
   city: string | null;
   default_category: string | null;
   active: boolean | null;
@@ -35,6 +36,7 @@ type CommunityVenueRow = {
 
 type CommunityForm = {
   name: string;
+  whatsapp: string;
   city: string;
   active: boolean;
   categories: Category[];
@@ -57,6 +59,7 @@ const CATEGORIES: { value: Category; label: string }[] = [
 
 const EMPTY_FORM: CommunityForm = {
   name: "",
+  whatsapp: "",
   city: "Guayaquil",
   active: true,
   categories: [],
@@ -65,6 +68,17 @@ const EMPTY_FORM: CommunityForm = {
 
 function normalizeText(value: string) {
   return value.trim().toLowerCase();
+}
+
+function normalizeWhatsappForLink(value: string) {
+  const digits = value.replace(/\D/g, "");
+
+  if (!digits) return "";
+
+  if (digits.startsWith("593")) return digits;
+  if (digits.startsWith("0")) return `593${digits.slice(1)}`;
+
+  return digits;
 }
 
 function isActiveCommunity(community: CommunityRow) {
@@ -102,21 +116,25 @@ function toggleArrayValue<T extends string>(values: T[], value: T) {
 export default function ComunidadesPage() {
   const [communities, setCommunities] = useState<CommunityRow[]>([]);
   const [venues, setVenues] = useState<VenueRow[]>([]);
-
   const [categoryMap, setCategoryMap] = useState<Record<string, Category[]>>({});
   const [venueMap, setVenueMap] = useState<Record<string, string[]>>({});
 
   const [playerCounts, setPlayerCounts] = useState<Record<string, number>>({});
   const [matchCounts, setMatchCounts] = useState<Record<string, number>>({});
+  const [templateCounts, setTemplateCounts] = useState<Record<string, number>>(
+    {}
+  );
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [notice, setNotice] = useState("");
-
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("activas");
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("todas");
+  const [statusFilter, setStatusFilter] =
+    useState<StatusFilter>("activas");
+  const [categoryFilter, setCategoryFilter] =
+    useState<CategoryFilter>("todas");
   const [venueFilter, setVenueFilter] = useState<VenueFilter>("todas");
 
   const [showForm, setShowForm] = useState(false);
@@ -124,7 +142,7 @@ export default function ComunidadesPage() {
   const [form, setForm] = useState<CommunityForm>(EMPTY_FORM);
 
   useEffect(() => {
-    loadCommunities();
+    void loadCommunities();
   }, []);
 
   async function loadCommunities() {
@@ -139,10 +157,13 @@ export default function ComunidadesPage() {
         communityVenuesRes,
         playerCommunitiesRes,
         eventsRes,
+        templatesRes,
       ] = await Promise.all([
         supabase
           .from("communities")
-          .select("id, sport_id, name, city, default_category, active")
+          .select(
+            "id, sport_id, name, whatsapp, city, default_category, active"
+          )
           .eq("account_id", DEMO_ACCOUNT_ID)
           .order("name"),
 
@@ -170,6 +191,10 @@ export default function ComunidadesPage() {
           .from("events")
           .select("id, community_id")
           .eq("account_id", DEMO_ACCOUNT_ID),
+
+        supabase
+          .from("event_templates")
+          .select("id, community_id"),
       ]);
 
       if (communitiesRes.error) throw communitiesRes.error;
@@ -178,6 +203,7 @@ export default function ComunidadesPage() {
       if (communityVenuesRes.error) throw communityVenuesRes.error;
       if (playerCommunitiesRes.error) throw playerCommunitiesRes.error;
       if (eventsRes.error) throw eventsRes.error;
+      if (templatesRes.error) throw templatesRes.error;
 
       const communityRows = (communitiesRes.data ?? []) as CommunityRow[];
       const venueRows = (venuesRes.data ?? []) as VenueRow[];
@@ -187,7 +213,8 @@ export default function ComunidadesPage() {
 
       const nextCategoryMap: Record<string, Category[]> = {};
 
-      for (const row of (communityCategoriesRes.data ?? []) as CommunityCategoryRow[]) {
+      for (const row of (communityCategoriesRes.data ??
+        []) as CommunityCategoryRow[]) {
         if (!row.community_id || !row.category) continue;
 
         nextCategoryMap[row.community_id] = [
@@ -200,7 +227,8 @@ export default function ComunidadesPage() {
 
       const nextVenueMap: Record<string, string[]> = {};
 
-      for (const row of (communityVenuesRes.data ?? []) as CommunityVenueRow[]) {
+      for (const row of (communityVenuesRes.data ??
+        []) as CommunityVenueRow[]) {
         if (!row.community_id || !row.venue_id) continue;
 
         nextVenueMap[row.community_id] = [
@@ -236,6 +264,19 @@ export default function ComunidadesPage() {
       }
 
       setMatchCounts(nextMatchCounts);
+
+      const nextTemplateCounts: Record<string, number> = {};
+
+      for (const row of templatesRes.data ?? []) {
+        const communityId = row.community_id as string;
+
+        if (!communityId) continue;
+
+        nextTemplateCounts[communityId] =
+          (nextTemplateCounts[communityId] ?? 0) + 1;
+      }
+
+      setTemplateCounts(nextTemplateCounts);
     } catch (error: any) {
       setNotice(`No se pudieron cargar las comunidades: ${error.message}`);
     } finally {
@@ -276,6 +317,7 @@ export default function ComunidadesPage() {
     setEditingId(community.id);
     setForm({
       name: community.name,
+      whatsapp: community.whatsapp ?? "",
       city: community.city ?? "Guayaquil",
       active: community.active !== false,
       categories: categoryMap[community.id] ?? [],
@@ -306,7 +348,10 @@ export default function ComunidadesPage() {
     }));
   }
 
-  async function saveCommunityScopes(communityId: string) {
+  async function saveCommunityScopes(
+    communityId: string,
+    values: CommunityForm
+  ) {
     const deleteCategoriesRes = await supabase
       .from("community_categories")
       .delete()
@@ -323,9 +368,9 @@ export default function ComunidadesPage() {
 
     if (deleteVenuesRes.error) throw deleteVenuesRes.error;
 
-    if (form.categories.length) {
+    if (values.categories.length) {
       const { error } = await supabase.from("community_categories").insert(
-        form.categories.map((category) => ({
+        values.categories.map((category) => ({
           account_id: DEMO_ACCOUNT_ID,
           community_id: communityId,
           category,
@@ -335,9 +380,9 @@ export default function ComunidadesPage() {
       if (error) throw error;
     }
 
-    if (form.venueIds.length) {
+    if (values.venueIds.length) {
       const { error } = await supabase.from("community_venues").insert(
-        form.venueIds.map((venueId) => ({
+        values.venueIds.map((venueId) => ({
           account_id: DEMO_ACCOUNT_ID,
           community_id: communityId,
           venue_id: venueId,
@@ -350,7 +395,10 @@ export default function ComunidadesPage() {
 
   async function saveCommunity() {
     const name = form.name.trim();
+    const whatsapp = form.whatsapp.trim() || null;
     const city = form.city.trim() || "Guayaquil";
+    const wasEditing = Boolean(editingId);
+    const editingCommunityId = editingId;
 
     if (!name) {
       setNotice("Escribe el nombre de la comunidad.");
@@ -361,23 +409,22 @@ export default function ComunidadesPage() {
     setNotice("");
 
     try {
-      let communityId = editingId;
+      let communityId = editingCommunityId;
 
-      if (editingId) {
+      if (editingCommunityId) {
         const { error } = await supabase
           .from("communities")
           .update({
             name,
+            whatsapp,
             city,
             default_category: null,
             active: form.active,
           })
-          .eq("id", editingId)
+          .eq("id", editingCommunityId)
           .eq("account_id", DEMO_ACCOUNT_ID);
 
         if (error) throw error;
-
-        communityId = editingId;
       } else {
         const sportId = await getPadelSportId();
 
@@ -387,6 +434,7 @@ export default function ComunidadesPage() {
             account_id: DEMO_ACCOUNT_ID,
             sport_id: sportId,
             name,
+            whatsapp,
             city,
             default_category: null,
             active: form.active,
@@ -403,12 +451,12 @@ export default function ComunidadesPage() {
         throw new Error("No se pudo obtener el ID de la comunidad.");
       }
 
-      await saveCommunityScopes(communityId);
+      await saveCommunityScopes(communityId, form);
 
       closeForm();
       await loadCommunities();
 
-      setNotice(editingId ? "Comunidad actualizada." : "Comunidad creada.");
+      setNotice(wasEditing ? "Comunidad actualizada." : "Comunidad creada.");
     } catch (error: any) {
       setNotice(`No se pudo guardar la comunidad: ${error.message}`);
     } finally {
@@ -416,28 +464,67 @@ export default function ComunidadesPage() {
     }
   }
 
-  async function toggleCommunityStatus(community: CommunityRow) {
-    const nextActive = !isActiveCommunity(community);
+  async function deleteCommunity(community: CommunityRow) {
+    const players = playerCounts[community.id] ?? 0;
+    const matches = matchCounts[community.id] ?? 0;
+    const templates = templateCounts[community.id] ?? 0;
+
+    if (players > 0 || matches > 0 || templates > 0) {
+      setNotice(
+        `No se puede eliminar "${community.name}" porque tiene ${players} jugador(es), ${matches} partido(s) y ${templates} plantilla(s). Desactívala desde Editar para conservar el historial.`
+      );
+      return;
+    }
+
+    const confirmation = window.prompt(
+      `Vas a eliminar definitivamente la comunidad "${community.name}".\n\nEsta acción no se puede deshacer.\n\nEscribe ELIMINAR para continuar.`
+    );
+
+    if (confirmation !== "ELIMINAR") {
+      setNotice("Eliminación cancelada. No se borró ninguna comunidad.");
+      return;
+    }
+
+    setDeletingId(community.id);
+    setNotice("");
 
     try {
-      const { error } = await supabase
-        .from("communities")
-        .update({ active: nextActive })
-        .eq("id", community.id)
-        .eq("account_id", DEMO_ACCOUNT_ID);
+      const { error } = await supabase.rpc(
+        "ptm_delete_community_permanent_v1",
+        {
+          p_account_id: DEMO_ACCOUNT_ID,
+          p_community_id: community.id,
+        }
+      );
 
       if (error) throw error;
 
+      if (editingId === community.id) {
+        closeForm();
+      }
+
       await loadCommunities();
-      setNotice(nextActive ? "Comunidad activada." : "Comunidad desactivada.");
+      setNotice(`Comunidad "${community.name}" eliminada definitivamente.`);
     } catch (error: any) {
-      setNotice(`No se pudo cambiar el estado: ${error.message}`);
+      setNotice(`No se pudo eliminar la comunidad: ${error.message}`);
+    } finally {
+      setDeletingId(null);
     }
   }
 
   const activeVenues = useMemo(() => {
     return venues.filter((venue) => venue.active !== false);
   }, [venues]);
+
+  const venuesAvailableInForm = useMemo(() => {
+    if (!editingId) return activeVenues;
+
+    const selectedVenueIds = new Set(form.venueIds);
+
+    return venues.filter(
+      (venue) => venue.active !== false || selectedVenueIds.has(venue.id)
+    );
+  }, [activeVenues, editingId, form.venueIds, venues]);
 
   const stats = useMemo(() => {
     const active = communities.filter(isActiveCommunity);
@@ -500,9 +587,12 @@ export default function ComunidadesPage() {
 
       if (cleanQuery) {
         const haystack = normalizeText(
-          `${community.name} ${community.city ?? ""} ${formatCategoryScope(
-            categories
-          )} ${formatVenueScope(venueIds, venues)}`
+          `${community.name} ${community.whatsapp ?? ""} ${
+            community.city ?? ""
+          } ${formatCategoryScope(categories)} ${formatVenueScope(
+            venueIds,
+            venues
+          )}`
         );
 
         if (!haystack.includes(cleanQuery)) return false;
@@ -521,6 +611,233 @@ export default function ComunidadesPage() {
     venues,
   ]);
 
+  function renderCommunityEditor(title: string) {
+    return (
+      <div className="card" style={{ marginTop: 12 }}>
+        <h2>{title}</h2>
+
+        <p className="help-text">
+          Cambia todos los datos necesarios y guarda una sola vez al final.
+          Ningún campo se guarda automáticamente.
+        </p>
+
+        <div className="grid grid-2">
+          <label>
+            Nombre de la comunidad
+            <input
+              placeholder="Ej: Los Puertos, Padel Prox, La Perla"
+              value={form.name}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }))
+              }
+            />
+          </label>
+
+          <label>
+            WhatsApp de la comunidad
+            <input
+              inputMode="tel"
+              placeholder="Ej: 0980822090"
+              value={form.whatsapp}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  whatsapp: event.target.value,
+                }))
+              }
+            />
+          </label>
+
+          <label>
+            Ciudad / zona
+            <input
+              placeholder="Ej: Guayaquil, Samborondón, Ceibos"
+              value={form.city}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  city: event.target.value,
+                }))
+              }
+            />
+          </label>
+
+          <label>
+            Estado
+            <select
+              value={form.active ? "activa" : "inactiva"}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  active: event.target.value === "activa",
+                }))
+              }
+            >
+              <option value="activa">Activa</option>
+              <option value="inactiva">Inactiva</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ height: 16 }} />
+
+        <div className="mini-panel">
+          <h3>Categorías permitidas</h3>
+
+          <p className="help-text">
+            Si no marcas ninguna, la comunidad acepta todas las categorías.
+          </p>
+
+          <div className="row-actions">
+            <button
+              className="btn secondary"
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  categories: CATEGORIES.map((item) => item.value),
+                }))
+              }
+              type="button"
+            >
+              Marcar todas
+            </button>
+
+            <button
+              className="btn ghost"
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  categories: [],
+                }))
+              }
+              type="button"
+            >
+              Todas por defecto
+            </button>
+          </div>
+
+          <div className="grid grid-4" style={{ marginTop: 12 }}>
+            {CATEGORIES.map((category) => (
+              <label
+                key={category.value}
+                className="mini-panel"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={form.categories.includes(category.value)}
+                  onChange={() => toggleCategory(category.value)}
+                />
+                {category.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ height: 16 }} />
+
+        <div className="mini-panel">
+          <h3>Sedes permitidas</h3>
+
+          <p className="help-text">
+            Si no marcas ninguna, la comunidad puede jugar en todas las sedes.
+          </p>
+
+          <div className="row-actions">
+            <button
+              className="btn secondary"
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  venueIds: activeVenues.map((venue) => venue.id),
+                }))
+              }
+              type="button"
+            >
+              Marcar sedes activas
+            </button>
+
+            <button
+              className="btn ghost"
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  venueIds: [],
+                }))
+              }
+              type="button"
+            >
+              Todas por defecto
+            </button>
+          </div>
+
+          {!venuesAvailableInForm.length ? (
+            <p className="help-text">
+              No hay sedes activas cargadas. Crea o activa sedes primero.
+            </p>
+          ) : (
+            <div className="grid grid-3" style={{ marginTop: 12 }}>
+              {venuesAvailableInForm.map((venue) => (
+                <label
+                  key={venue.id}
+                  className="mini-panel"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    cursor: "pointer",
+                    opacity: venue.active === false ? 0.7 : 1,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={form.venueIds.includes(venue.id)}
+                    onChange={() => toggleVenue(venue.id)}
+                  />
+
+                  <span>
+                    <strong>{venue.name}</strong>
+                    {venue.active === false ? " · Inactiva" : ""}
+                    <br />
+                    <span className="help-text">
+                      {venue.city ?? "Guayaquil"}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="row-actions" style={{ marginTop: 16 }}>
+          <button className="btn" onClick={saveCommunity} disabled={saving}>
+            {saving
+              ? "Guardando..."
+              : editingId
+                ? "Guardar cambios"
+                : "Crear comunidad"}
+          </button>
+
+          <button
+            className="btn secondary"
+            onClick={closeForm}
+            disabled={saving}
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <PageHeader
@@ -534,7 +851,7 @@ export default function ComunidadesPage() {
     <>
       <PageHeader
         title="Comunidades"
-        description="Crea grupos de jugadores y define en qué categorías y sedes pueden jugar."
+        description="Administra nombre, WhatsApp, estado, categorías y sedes desde un solo lugar."
         action={
           <button className="btn" onClick={openCreateForm}>
             Crear comunidad
@@ -554,7 +871,10 @@ export default function ComunidadesPage() {
         <div style={{ height: 12 }} />
 
         <div className="row-actions">
-          <button className="btn secondary" onClick={loadCommunities}>
+          <button
+            className="btn secondary"
+            onClick={() => void loadCommunities()}
+          >
             🔄 Actualizar comunidades
           </button>
 
@@ -564,9 +884,8 @@ export default function ComunidadesPage() {
         </div>
 
         <p className="help-text">
-          Regla: una comunidad no tiene una sola categoría fija. Puede aceptar
-          todas las categorías o solo algunas. También puede jugar en todas las
-          sedes o solo en sedes específicas.
+          Una comunidad puede aceptar una, varias o todas las categorías y
+          jugar en una, varias o todas las sedes.
         </p>
       </div>
 
@@ -582,7 +901,9 @@ export default function ComunidadesPage() {
         <div className="card">
           <p className="help-text">Jugadores vinculados</p>
           <h2>{stats.totalPlayers}</h2>
-          <p className="help-text">Suma de vínculos jugador-comunidad.</p>
+          <p className="help-text">
+            Partidos vinculados: {stats.totalMatches}
+          </p>
         </div>
 
         <div className="card">
@@ -598,207 +919,9 @@ export default function ComunidadesPage() {
         </div>
       </div>
 
-      {showForm ? (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h2>{editingId ? "Editar comunidad" : "Crear comunidad"}</h2>
-
-          <p className="help-text">
-            Primero crea la comunidad. Luego define qué categorías acepta y en
-            qué sedes juega.
-          </p>
-
-          <div className="grid grid-2">
-            <label>
-              Nombre de la comunidad
-              <input
-                placeholder="Ej: Los Puertos, Padel Prox, La Perla"
-                value={form.name}
-                onChange={(e) =>
-                  setForm((current) => ({
-                    ...current,
-                    name: e.target.value,
-                  }))
-                }
-              />
-            </label>
-
-            <label>
-              Ciudad / zona
-              <input
-                placeholder="Ej: Guayaquil, Samborondón, Ceibos"
-                value={form.city}
-                onChange={(e) =>
-                  setForm((current) => ({
-                    ...current,
-                    city: e.target.value,
-                  }))
-                }
-              />
-            </label>
-
-            <label>
-              Estado
-              <select
-                value={form.active ? "activa" : "inactiva"}
-                onChange={(e) =>
-                  setForm((current) => ({
-                    ...current,
-                    active: e.target.value === "activa",
-                  }))
-                }
-              >
-                <option value="activa">Activa</option>
-                <option value="inactiva">Inactiva</option>
-              </select>
-            </label>
-          </div>
-
-          <div style={{ height: 16 }} />
-
-          <div className="card">
-            <h3>Categorías permitidas</h3>
-
-            <p className="help-text">
-              Si no marcas ninguna, esta comunidad acepta todas las categorías.
-            </p>
-
-            <div className="row-actions">
-              <button
-                className="btn secondary"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    categories: CATEGORIES.map((item) => item.value),
-                  }))
-                }
-                type="button"
-              >
-                Seleccionar todas
-              </button>
-
-              <button
-                className="btn ghost"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    categories: [],
-                  }))
-                }
-                type="button"
-              >
-                Dejar todas por defecto
-              </button>
-            </div>
-
-            <div className="grid grid-4" style={{ marginTop: 12 }}>
-              {CATEGORIES.map((category) => (
-                <label
-                  key={category.value}
-                  className="mini-panel"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={form.categories.includes(category.value)}
-                    onChange={() => toggleCategory(category.value)}
-                  />
-                  {category.label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ height: 16 }} />
-
-          <div className="card">
-            <h3>Sedes permitidas</h3>
-
-            <p className="help-text">
-              Si no marcas ninguna, esta comunidad puede jugar en todas las
-              sedes activas.
-            </p>
-
-            <div className="row-actions">
-              <button
-                className="btn secondary"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    venueIds: activeVenues.map((venue) => venue.id),
-                  }))
-                }
-                type="button"
-              >
-                Seleccionar todas las sedes
-              </button>
-
-              <button
-                className="btn ghost"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    venueIds: [],
-                  }))
-                }
-                type="button"
-              >
-                Dejar todas por defecto
-              </button>
-            </div>
-
-            {!activeVenues.length ? (
-              <p className="help-text">
-                No hay sedes activas cargadas. Crea o activa sedes primero.
-              </p>
-            ) : (
-              <div className="grid grid-3" style={{ marginTop: 12 }}>
-                {activeVenues.map((venue) => (
-                  <label
-                    key={venue.id}
-                    className="mini-panel"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.venueIds.includes(venue.id)}
-                      onChange={() => toggleVenue(venue.id)}
-                    />
-                    <span>
-                      <strong>{venue.name}</strong>
-                      <br />
-                      <span className="help-text">{venue.city ?? "Guayaquil"}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="row-actions">
-            <button className="btn" onClick={saveCommunity} disabled={saving}>
-              {saving
-                ? "Guardando..."
-                : editingId
-                  ? "Guardar cambios"
-                  : "Crear comunidad"}
-            </button>
-
-            <button className="btn secondary" onClick={closeForm}>
-              Cancelar
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {showForm && !editingId
+        ? renderCommunityEditor("Crear comunidad")
+        : null}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <h2>Filtros rápidos</h2>
@@ -807,9 +930,9 @@ export default function ComunidadesPage() {
           <label>
             Buscar
             <input
-              placeholder="Nombre, ciudad, categoría o sede"
+              placeholder="Nombre, WhatsApp, ciudad, categoría o sede"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(event) => setQuery(event.target.value)}
             />
           </label>
 
@@ -817,8 +940,8 @@ export default function ComunidadesPage() {
             Estado
             <select
               value={statusFilter}
-              onChange={(e) =>
-                setStatusFilter(e.target.value as StatusFilter)
+              onChange={(event) =>
+                setStatusFilter(event.target.value as StatusFilter)
               }
             >
               <option value="activas">Activas</option>
@@ -831,11 +954,12 @@ export default function ComunidadesPage() {
             Categoría
             <select
               value={categoryFilter}
-              onChange={(e) =>
-                setCategoryFilter(e.target.value as CategoryFilter)
+              onChange={(event) =>
+                setCategoryFilter(event.target.value as CategoryFilter)
               }
             >
               <option value="todas">Todas</option>
+
               {CATEGORIES.map((category) => (
                 <option key={category.value} value={category.value}>
                   {category.label}
@@ -848,9 +972,10 @@ export default function ComunidadesPage() {
             Sede
             <select
               value={venueFilter}
-              onChange={(e) => setVenueFilter(e.target.value)}
+              onChange={(event) => setVenueFilter(event.target.value)}
             >
               <option value="todas">Todas</option>
+
               {venues.map((venue) => (
                 <option key={venue.id} value={venue.id}>
                   {venue.name}
@@ -860,10 +985,24 @@ export default function ComunidadesPage() {
           </label>
         </div>
 
-        <p className="help-text">
-          Mostrando {filteredCommunities.length} de {communities.length}{" "}
-          comunidades.
-        </p>
+        <div className="row-actions" style={{ marginTop: 12 }}>
+          <button
+            className="btn secondary"
+            onClick={() => {
+              setQuery("");
+              setStatusFilter("todas");
+              setCategoryFilter("todas");
+              setVenueFilter("todas");
+            }}
+          >
+            Limpiar filtros
+          </button>
+
+          <span className="help-text">
+            Mostrando {filteredCommunities.length} de {communities.length}{" "}
+            comunidades.
+          </span>
+        </div>
       </div>
 
       {!filteredCommunities.length ? (
@@ -875,6 +1014,7 @@ export default function ComunidadesPage() {
             <button
               className="btn secondary"
               onClick={() => {
+                setQuery("");
                 setStatusFilter("todas");
                 setCategoryFilter("todas");
                 setVenueFilter("todas");
@@ -894,83 +1034,140 @@ export default function ComunidadesPage() {
             const active = isActiveCommunity(community);
             const players = playerCounts[community.id] ?? 0;
             const matches = matchCounts[community.id] ?? 0;
+            const templates = templateCounts[community.id] ?? 0;
             const categories = categoryMap[community.id] ?? [];
             const venueIds = venueMap[community.id] ?? [];
+            const whatsappLink = normalizeWhatsappForLink(
+              community.whatsapp ?? ""
+            );
+            const isEditing = editingId === community.id;
 
             return (
               <div
                 className="card"
                 key={community.id}
-                style={{ opacity: active ? 1 : 0.7 }}
+                style={{ opacity: active || isEditing ? 1 : 0.7 }}
               >
-                <div className="player-top">
-                  <div>
-                    <h2>{community.name}</h2>
-                    <p>{community.city ?? "Guayaquil"}</p>
-                  </div>
-                </div>
+                {isEditing ? (
+                  renderCommunityEditor(`Editar: ${community.name}`)
+                ) : (
+                  <>
+                    <div className="player-top">
+                      <div>
+                        <h2>{community.name}</h2>
+                        <p>{community.city ?? "Guayaquil"}</p>
+                      </div>
+                    </div>
 
-                <div className="row-actions">
-                  <span className={`badge ${active ? "good" : "danger"}`}>
-                    {active ? "Activa" : "Inactiva"}
-                  </span>
+                    <div className="row-actions">
+                      <span className={`badge ${active ? "good" : "danger"}`}>
+                        {active ? "Activa" : "Inactiva"}
+                      </span>
 
-                  <span className="badge neutral">
-                    {categories.length ? "Categorías limitadas" : "Todas las categorías"}
-                  </span>
+                      <span className="badge neutral">
+                        {categories.length
+                          ? "Categorías limitadas"
+                          : "Todas las categorías"}
+                      </span>
 
-                  <span className="badge neutral">
-                    {venueIds.length ? "Sedes limitadas" : "Todas las sedes"}
-                  </span>
-                </div>
+                      <span className="badge neutral">
+                        {venueIds.length
+                          ? "Sedes limitadas"
+                          : "Todas las sedes"}
+                      </span>
+                    </div>
 
-                <div style={{ height: 12 }} />
+                    <div style={{ height: 12 }} />
 
-                <div className="mini-panel">
-                  <p className="help-text">Categorías permitidas</p>
-                  <strong>{formatCategoryScope(categories)}</strong>
-                </div>
+                    <div className="mini-panel">
+                      <p className="help-text">WhatsApp</p>
 
-                <div style={{ height: 8 }} />
+                      {community.whatsapp ? (
+                        whatsappLink ? (
+                          <a
+                            href={`https://wa.me/${whatsappLink}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <strong>{community.whatsapp}</strong>
+                          </a>
+                        ) : (
+                          <strong>{community.whatsapp}</strong>
+                        )
+                      ) : (
+                        <strong>Sin WhatsApp</strong>
+                      )}
+                    </div>
 
-                <div className="mini-panel">
-                  <p className="help-text">Sedes permitidas</p>
-                  <strong>{formatVenueScope(venueIds, venues)}</strong>
-                </div>
+                    <div style={{ height: 8 }} />
 
-                <div style={{ height: 12 }} />
+                    <div className="mini-panel">
+                      <p className="help-text">Categorías permitidas</p>
+                      <strong>{formatCategoryScope(categories)}</strong>
+                    </div>
 
-                <div className="grid grid-2">
-                  <div className="mini-panel">
-                    <p className="help-text">Jugadores</p>
-                    <h2>{players}</h2>
-                  </div>
+                    <div style={{ height: 8 }} />
 
-                  <div className="mini-panel">
-                    <p className="help-text">Partidos</p>
-                    <h2>{matches}</h2>
-                  </div>
-                </div>
+                    <div className="mini-panel">
+                      <p className="help-text">Sedes permitidas</p>
+                      <strong>{formatVenueScope(venueIds, venues)}</strong>
+                    </div>
 
-                <p className="help-text">
-                  ID corto: {community.id.slice(0, 8)}
-                </p>
+                    <div style={{ height: 12 }} />
 
-                <div className="row-actions">
-                  <button
-                    className="btn secondary"
-                    onClick={() => openEditForm(community)}
-                  >
-                    Editar
-                  </button>
+                    <div className="grid grid-3">
+                      <div className="mini-panel">
+                        <p className="help-text">Jugadores</p>
+                        <h2>{players}</h2>
+                      </div>
 
-                  <button
-                    className="btn ghost"
-                    onClick={() => toggleCommunityStatus(community)}
-                  >
-                    {active ? "Desactivar" : "Activar"}
-                  </button>
-                </div>
+                      <div className="mini-panel">
+                        <p className="help-text">Partidos</p>
+                        <h2>{matches}</h2>
+                      </div>
+
+                      <div className="mini-panel">
+                        <p className="help-text">Plantillas</p>
+                        <h2>{templates}</h2>
+                      </div>
+                    </div>
+
+                    <p className="help-text">
+                      ID corto: {community.id.slice(0, 8)}
+                    </p>
+
+                    <div className="row-actions">
+                      <button
+                        className="btn secondary"
+                        onClick={() => openEditForm(community)}
+                      >
+                        Editar
+                      </button>
+
+                      <button
+                        className="btn danger"
+                        onClick={() => void deleteCommunity(community)}
+                        disabled={deletingId === community.id}
+                      >
+                        {deletingId === community.id
+                          ? "Eliminando..."
+                          : "Eliminar"}
+                      </button>
+                    </div>
+
+                    {players > 0 || matches > 0 || templates > 0 ? (
+                      <p className="help-text">
+                        Esta comunidad tiene historial. Para dejar de usarla,
+                        entra en Editar y cambia el estado a Inactiva.
+                      </p>
+                    ) : (
+                      <p className="help-text">
+                        Puede eliminarse definitivamente si es una prueba,
+                        duplicado o registro falso.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
             );
           })}
